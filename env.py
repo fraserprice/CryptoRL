@@ -8,141 +8,177 @@ import numpy as np
 
 from gym import Env, spaces
 
-from market_data import KaikoData
+from market_data import InstrumentDataset
 from sklearn.preprocessing import StandardScaler
 
 
-class ObservationSpaces(Enum):
-    HUNDRED_STEPS = 0
-    THOUSAND_STEPS = 1
-    MODEL_BASED = 2
-
-
-class RewardModels(Enum):
-    MONTE_CARLO = 0
-    TEMPORAL_DIFFERENCE = 1
-
-
 class MarketOHLCVEnv(Env):
-    def __init__(self, trade_fee=5, reward_model=RewardModels.MONTE_CARLO,
-                 n_obs=50, ep_len=100):
-        self.kaiko_data = KaikoData()
-        self.kaiko_data.load(min_points=n_obs + ep_len)
-        self.n_obs = n_obs
-        self.n_state = 4
-        self.ohlcv_size = 3
-        obs_shape = n_obs * self.ohlcv_size + self.n_state
-        self.action_space = spaces.MultiDiscrete([3])
-        self.observation_space = spaces.Box(low=0, high=1000, shape=(obs_shape,), dtype='float32')
-        self.OHLCV_normalizer = StandardScaler()
-        self.state_normalizer = StandardScaler()
-        self.reward_normalizer = StandardScaler()
-
-        self.reward_model = reward_model
-        self.steps = 0
+    def __init__(self, trade_fee=0.002, n_obs=50, ep_len=150, mode='train', min_points=50000, obs_keys=['timestamps', 'open', 'volume']):
+        import matplotlib.pyplot as plt
+        self.mode = mode
+        self.instrument_data = InstrumentDataset(min_points=min_points)
         self.episode_length = ep_len
         self.trade_fee = trade_fee
-        self.done = False
-        self.buy_timestep = None
-        self.buy_value = None
-        self.instrument = None
-        self.OHLCV_window = None
-        self.current_instrument = None
-        self.normalized_window = np.array([])
 
+        self.n_obs = n_obs
+        self.obs_keys = obs_keys
+        self.obs_dims = 3 + (5 if obs_keys is None else len(obs_keys))
+        self.action_space = spaces.Discrete(4)
+        self.observation_space = spaces.Box(low=-3, high=3, shape=(self.n_obs, self.obs_dims,), dtype='float32')
+
+        self.price_normalizer = StandardScaler()
+        self.volume_normalizer = StandardScaler()
+        self.timestamp_normalizer = StandardScaler()
+        self.normalizer_map = {}
+
+        self.steps = 0
+        self.done = False
+        self.enter_timestamp, self.enter_value, self.normalized_enter_value, self.long = None, None, None, None
+        self.instrument = None
+        self.episode_data_window = None
+        self.episode_data_size = self.episode_length + self.n_obs
+        self.normalized_obs = np.array([])
+
+        self.plt = plt
+        self.plt.ion()
 
         self.reset()
 
     # noinspection PyTypeChecker
     def step(self, action):
-        timestep, open_p, _, _, _, _ = self.__get_ohlcv_index(self.steps + self.n_obs - 1)
+        long, short, exit, hold = [action == a for a in range(0, 4)]
+        timestamp, open_p = self.__get_ohlcv_index(self.steps + self.n_obs - 1, keys=['timestamps', 'open'])
 
-        buy, sell, hold = [action == a for a in range(0, 3)]  # TODO: Short/Long
         reward = 0
-        if open_p == 0 or hold:
+        if open_p <= 0 or hold:
+            if self.enter_timestamp is not None:
+                reward = -0.001
+                print(f"Penalizing for hold after enter: {reward}")
             print("Holding")
-        elif buy and self.buy_timestep is None:
-            print(f"Buy at {timestep} for {open_p}")
-            self.buy_timestep, self.buy_value = timestep, open_p
-        elif sell and self.buy_timestep is not None:
-            reward = (open_p - self.buy_value) / self.buy_value
-            print(f"Selling. Reward: {reward}")
-            self.done = True
+        elif long or short:
+            if self.enter_timestamp is None:
+                print(f"Entering {'long' if long else 'short'} at {timestamp} for {open_p}")
+                self.enter_timestamp, self.enter_value, self.long = timestamp, open_p, long
+                self.normalized_enter_value = self.price_normalizer.transform([[self.enter_value]]).item()
+            else:
+                print("Trying to enter trade when already entered")
+                reward = -0.1
+        elif exit:
+            if self.enter_timestamp is not None:
+                reward = 100 * (open_p - self.enter_value) / self.enter_value
+                if not long:
+                    reward = -reward
+                print(f"Exiting after {'Long' if self.long else 'Short'}. Reward: {reward}")
+                self.done = True
+            else:
+                print("Trying to exit when not yet entered")
+                reward = -0.1
         if self.steps == self.episode_length:
-            print("Episode ending. Failed...")
-            reward = -10
+            if self.enter_timestamp is not None:
+                print("Ended episode with trade in progress")
+            else:
+                print("Ended episode without enter")
+
         self.steps += 1
+        next_timestep = self.steps + self.n_obs - 1
+
+        self.normalized_obs = self.normalized_obs[1:]
+        normalized_ohlcv = self.__get_ohlcv_index(next_timestep, normalize=True, keys=self.obs_keys)
+
+        if self.enter_value is None:
+            step = np.array(list(normalized_ohlcv) + [-1, -1, -1])
+        else:
+            long = 1 if self.long else -1
+            step = np.array(list(normalized_ohlcv) + [self.normalized_enter_value, long, -long])
+        self.normalized_obs = np.append(self.normalized_obs, [step]).reshape((self.n_obs, self.obs_dims))
 
         return self.__get_observation(), reward, self.steps == self.episode_length or self.done, {}
 
     def reset(self):
         self.done = False
-        self.buy_timestep, self.buy_value = None, None
-        self.instrument, self.OHLCV_window = self.kaiko_data.get_random(n_points=self.episode_length + self.n_obs)
+        self.enter_timestamp, self.enter_value, self.normalized_enter_value = None, None, None
+        self.episode_data_window = self.instrument_data.get_random_window(n_points=self.episode_data_size,
+                                                                          split=self.mode)
         self.steps = 0
-        self.OHLCV_normalizer = StandardScaler()
-        self.normalized_window = self.OHLCV_normalizer.fit_transform(self.__get_ohlcv_range(0, self.n_obs)).flatten()
+        self.__get_new_random_window()
 
         return self.__get_observation()
 
     def render(self, mode='human', close=False):
-        import matplotlib.pyplot as plt
-        plt.ion()
-        past_t, past_o, _ = zip(*self.__get_ohlcv_range(0, self.steps))
-        curr_t, curr_o, _ = zip(*self.__get_ohlcv_range(self.steps - 1, self.steps + self.n_obs))
-        futr_t, futr_o, _ = zip(*self.__get_ohlcv_range(self.steps + self.n_obs - 1, len(self.OHLCV_window['open'])))
+        self.plt.cla()
+        past_t, past_o = zip(*self.__get_ohlcv_window(0, self.steps, keys=['timestamps', 'open']))
+        self.plt.plot(past_t, past_o, color="grey")
+        curr_t, curr_o = zip(*self.__get_ohlcv_window(self.steps - 1, self.steps + self.n_obs, keys=['timestamps', 'open']))
+        futr_t, futr_o = zip(*self.__get_ohlcv_window(self.steps + self.n_obs - 1, len(self.episode_data_window['open']), keys=['timestamps', 'open']))
 
-        plt.cla()
-        plt.plot(past_t, past_o, color="grey")
-        plt.plot(curr_t, curr_o, color="blue")
-        plt.plot(futr_t, futr_o, color="grey")
-        plt.axvline(x=curr_t[0], color="grey")
-        plt.axvline(x=curr_t[-1], color="grey")
-        if self.buy_timestep is not None:
-            plt.scatter([self.buy_timestep], [self.buy_value], color="red")
+        self.plt.plot(curr_t, curr_o, color="blue")
+        self.plt.plot(futr_t, futr_o, color="grey")
+
+        self.plt.axvline(x=curr_t[0], color="grey" if not self.done else "green")
+        self.plt.axvline(x=curr_t[-1], color="grey" if not self.done else "green")
+        if self.enter_timestamp is not None:
+            self.plt.scatter([self.enter_timestamp], [self.enter_value], color="red", marker="^" if self.long else "v")
+            self.plt.axhline(y=self.enter_value, color="red", lw=0.5)
         if self.done:
-            t, o, _, _, _, _ = self.__get_ohlcv_index(self.steps + self.n_obs - 1)
-            plt.scatter([t], [o], color="green")
-            plt.title(f'Bought at {self.buy_value}, sold at {o} for a profit of {round((o - self.buy_value) / self.buy_value, 5)}%')
-            plt.draw()
-            plt.pause(0.001)
-            plt.waitforbuttonpress()
+            timestamp, open = self.__get_ohlcv_index(self.steps + self.n_obs - 1, keys=['timestamps', 'open'])
+            self.plt.scatter([timestamp], [open], color="green")
+            profit = round((100 if self.long else -100) * (open - self.enter_value) / self.enter_value, 5)
+            self.plt.title(f'{"Long" if self.long else "Short"} at {self.enter_value}, exit at {open} for a profit of {profit}%')
+            self.plt.draw()
+            self.plt.pause(0.001)
+            self.plt.waitforbuttonpress()
         else:
-            plt.title(f'Bought at {self.buy_timestep} for {self.buy_value}' if self.buy_timestep is not None else 'No Trade Made')
-            plt.draw()
-            plt.pause(0.001)
-            # time.sleep(0.1)
-        print("Rendering!")
-
-        # plt.waitforbuttonpress()
+            self.plt.title(
+                f'{"Long" if self.long else "Short"} at {self.enter_timestamp} for {self.enter_value}' if self.enter_timestamp is not None else 'No Trade Made')
+            self.plt.draw()
+            self.plt.pause(0.001)
 
         return True
 
     def __get_observation(self):
-        self.normalized_window = self.normalized_window[self.ohlcv_size:]
-        next_timestep = self.steps + self.n_obs - 1
-        ohlcv_values = self.__get_ohlcv_index(next_timestep)
-        timestamp, open_p, high, low, _, volume = ohlcv_values
-        self.current_price = open_p
-        self.normalized_window = np.concatenate((self.normalized_window, self.OHLCV_normalizer.transform([[timestamp, open_p, volume]]).flatten()), axis=None)
-
-        state = np.array([
-            self.steps,
-            1 if self.buy_timestep is not None else -1,
-            self.buy_value if self.buy_value is not None else -1,
-            self.current_price
-        ])
-        self.state_normalizer.partial_fit([state])
-        normalized_state = self.state_normalizer.transform([state]).flatten()
-        obs = np.concatenate((normalized_state, self.normalized_window), axis=None)
+        obs = self.normalized_obs
 
         return obs
 
-    def __get_ohlcv_range(self, start, end):
-        return np.array([[self.OHLCV_window[key][i] for key in ['timestamps', 'open', 'volume']] for i in range(start, end)])
+    def __get_ohlcv_window(self, start, end, normalize=False, keys=None):
+        return np.array([self.__get_ohlcv_index(i, normalize=normalize, keys=keys) for i in range(start, end)])
 
-    def __get_ohlcv_index(self, i):
-        return np.array([self.OHLCV_window[key][i] for key in self.OHLCV_window.keys()])
+    def __get_ohlcv_index(self, i, normalize=False, keys=None):
+        keys = self.episode_data_window.keys() if keys is None else keys
+        if not normalize:
+            return np.array([self.episode_data_window[key][i] for key in keys])
+        else:
+            return np.array([self.normalizer_map[key].transform([[self.episode_data_window[key][i]]]).item() for key in keys])
+
+    def __get_new_random_window(self):
+        timestamps, opens, volumes = zip(*self.__get_ohlcv_window(0, self.episode_data_size, normalize=False, keys=['timestamps', 'open', 'volume']))
+
+        self.volume_normalizer = StandardScaler()
+        fit_window = [[volume] for volume in volumes]
+        self.volume_normalizer.fit(fit_window)
+
+        self.price_normalizer = StandardScaler()
+        fit_window = [[open] for open in opens]
+        self.price_normalizer.fit(fit_window)
+
+        fit_window = [[timestamp] for timestamp in timestamps]
+        self.timestamp_normalizer.partial_fit(fit_window)
+
+        self.__set_normalizer_map()
+
+        start_window = [list(price_obs) + [-1, -1, -1] for price_obs in self.__get_ohlcv_window(0, self.n_obs, normalize=True, keys=self.obs_keys)]
+
+        self.normalized_obs = np.array(start_window).reshape((self.n_obs, self.obs_dims))
+
+    def __set_normalizer_map(self):
+        self.normalizer_map = {
+            'timestamps': self.timestamp_normalizer,
+            'open': self.price_normalizer,
+            'high': self.price_normalizer,
+            'low': self.price_normalizer,
+            'close': self.price_normalizer,
+            'volume': self.volume_normalizer
+        }
 
 
 if __name__ == "__main__":

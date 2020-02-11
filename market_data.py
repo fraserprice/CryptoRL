@@ -1,9 +1,12 @@
 # AIO class for representation of market data and incremental access
 import json
+
+import pandas
 import pymongo
 import random
 import time
 import requests
+import ta
 from pymongo import MongoClient
 from pymongo.errors import BulkWriteError
 from requests.exceptions import HTTPError, ChunkedEncodingError
@@ -12,42 +15,42 @@ API_KEY = 'b4fda6c9cfa8c173209c61171bd1b4aa'
 
 
 class KaikoInstrument:
+    """
+    Interface for financial instrument OHLCV + ta data. self.data is of form:
+
+    {
+        '_id': str,
+        'interval': str,
+        'exchange_code': str,
+        'class_name': str,
+        'code': str,
+        'timestamps', list,
+        'open': list,
+        'high': list,
+        'low': list,
+        'close': list,
+        'volume': list
+    }
+    """
     def __init__(self, instrument, interval='1m', api_key=API_KEY):
         self.api_key = api_key
-        self.instrument = instrument
+        self.data = instrument
         self.interval = interval
-        self.exchange = self.instrument["exchange_code"]
-        self.class_name = self.instrument["class"]
-        self.code = self.instrument["code"]
-        self.timestamps = instrument["timestamps"] if "timestamps" in instrument else []
-        self.open = instrument["open"] if "open" in instrument else []
-        self.high = instrument["high"] if "high" in instrument else []
-        self.low = instrument["low"] if "low" in instrument else []
-        self.close = instrument["close"] if "close" in instrument else []
-        self.volume = instrument["volume"] if "volume" in instrument else []
-        self.unsaved = False
-
-    def __repr__(self):
-        return ':'.join([self.exchange, self.class_name, self.code, self.interval])
-
-    def toDict(self):
-        self.instrument.update({
+        self.data.update({
             "_id": self.__repr__(),
             "interval": self.interval,
-            "timestamps": self.timestamps,
-            "open": self.open,
-            "high": self.high,
-            "low": self.low,
-            "close": self.close,
-            "volume": self.volume,
         })
-        return self.instrument
+
+    def __repr__(self):
+        return ':'.join([self.data['exchange_code'], self.data['class'], self.data['code'], self.interval])
+
+    def to_dict(self):
+        return self.data
 
     def request_OHLCV(self, interval='1m'):
-        self.unsaved = True
         try:
             initial_res = requests.get(
-                f'https://eu.market-api.kaiko.io/v1/data/trades.latest/exchanges/{self.exchange}/{self.class_name}/{self.code}/aggregations/ohlcv',
+                f'https://eu.market-api.kaiko.io/v1/data/trades.latest/exchanges/{self.data["exchange"]}/{self.data["class"]}/{self.data["code"]}/aggregations/ohlcv',
                 headers={f'X-Api-Key': self.api_key, 'Accept': 'application/json'},
                 params={'interval': interval, 'page_size': 100000}
             )
@@ -72,51 +75,65 @@ class KaikoInstrument:
                     break
                 except:
                     break
-        self.timestamps, self.open, self.high, self.low, self.close, self.volume = (
-            [float(point[metric]) for point in OHLCV] for metric in ("timestamp", "open", "high", "low", "close", "volume")
-        )
-
-        print(f"{self}\tTotal size: {len(self.open)}")
+        for metric in ("timestamp", "open", "high", "low", "close", "volume"):
+            self.data[metric] = [float(point[metric]) for point in OHLCV]
+        print(f"{self}\tTotal size: {len(self.data['open'])}")
 
     def get_random_OHLCV_window(self, n_points=200):
         print(f"{self}: Getting random window")
-        assert len(self.open) > n_points, "Less than required points..."
-        assert len(self.open) == len(self.close) == len(self.high) == len(self.low) == len(self.volume), "Same len"
-        start_index = random.randint(0, len(self.open) - n_points)
+        start_index = random.randint(0, len(self.data['open']) - n_points)
         end_index = start_index + n_points
         return {
-            "timestamps": self.timestamps[start_index:end_index],
-            "open": self.open[start_index:end_index],
-            "high": self.high[start_index:end_index],
-            "low": self.low[start_index:end_index],
-            "close": self.close[start_index:end_index],
-            "volume": self.volume[start_index:end_index],
+            "timestamps": self.data['timestamps'][start_index:end_index],
+            "open": self.data['open'][start_index:end_index],
+            "high": self.data['high'][start_index:end_index],
+            "low": self.data['low'][start_index:end_index],
+            "close": self.data['close'][start_index:end_index],
+            "volume": self.data['volume'][start_index:end_index],
         }
 
 
-class KaikoData:
-    def __init__(self, db_host="mongodb://localhost:27017/", api_key=API_KEY):
+class InstrumentDataset:
+    def __init__(self, min_points=50000, db_host="mongodb://localhost:27017/", api_key=API_KEY):
         self.api_key = api_key
+        self.min_points = min_points
         self.exchanges = {}
         self.to_update = []
-        self.instrument_ids = []
+        self.train_ids, self.test_ids = [], []
         self.__mongo_client = MongoClient(db_host)
         self.__db = self.__mongo_client["crypto_rl"]
         self.__instrument_collection = self.__db["instruments"]
         self.__exchange_collection = self.__db["exchanges"]
-        # self.__instrument_collection.drop_index([('data_id', pymongo.ASCENDING)])
+        self.__split_collection = self.__db["splits"]
+        self.load_split()
 
-    def save(self, overwrite=False):
-        print(f"To update: {self.to_update}")
-        for instrument in self.to_update:
-            self.__instrument_collection.update_one({'_id': str(instrument)}, {"$set": instrument.toDict()}, upsert=True)
-        if len(self.exchanges) > 0:
-            self.__exchange_collection.insert_many(self.exchanges)
-        self.to_update = []
+    def get_random_window(self, n_points=200, minute_timesteps=True, split='test', ta=None):
+        instrument_id = random.choice(self.test_ids if split == 'test' else self.train_ids)
+        instrument = KaikoInstrument(self.__instrument_collection.find_one({'_id': instrument_id}))
+        window = instrument.get_random_OHLCV_window(n_points=n_points)
+        if minute_timesteps:
+            window['timestamps'] = [(t - window['timestamps'][0]) / 60000 for t in window['timestamps']]
+        return window
 
-    def load(self, min_points=1000):
+    def get_instrument_ids(self):
         self.exchanges = self.__exchange_collection.find()
-        self.instrument_ids = self.__instrument_collection.distinct('_id', filter={f'open.{min_points}': {'$exists': True}})
+        return self.__instrument_collection.distinct('_id', filter={f'open.{self.min_points}': {'$exists': True}})
+
+    def create_split(self, train_prop=0.95):
+        instrument_ids = self.get_instrument_ids()
+        print(f"Number of instruments: {len(instrument_ids)}")
+        random.shuffle(instrument_ids)
+        i = int(train_prop * len(instrument_ids))
+        split = {'train': instrument_ids[:i], 'test': instrument_ids[i:]}
+        self.__split_collection.update_one({'_id': self.min_points}, {'$set': split}, upsert=True)
+        return split
+
+    def load_split(self):
+        split = self.__split_collection.find_one({'_id': self.min_points})
+        if split is None:
+            split = self.create_split()
+        self.train_ids, self.test_ids = split['train'], split['test']
+        print(f"Number of train instruments: {len(self.train_ids)}\nNumber of test instruments: {len(self.test_ids)}")
 
     def request_exchanges(self, override_cache=False):
         r = requests.get('https://reference-data-api.kaiko.io/v1/exchanges')
@@ -138,10 +155,13 @@ class KaikoData:
                 self.save()
         self.save()
 
-    def get_random(self, n_points=200):
-        instrument_id = random.choice(self.instrument_ids)
-        instrument = KaikoInstrument(self.__instrument_collection.find_one({'_id': instrument_id}))
-        return instrument, instrument.get_random_OHLCV_window(n_points=n_points)
+    def save(self):
+        print(f"To update: {self.to_update}")
+        for instrument in self.to_update:
+            self.__instrument_collection.update_one({'_id': str(instrument)}, {"$set": instrument.to_dict()}, upsert=True)
+        if len(self.exchanges) > 0:
+            self.__exchange_collection.insert_many(self.exchanges)
+        self.to_update = []
 
 
 class RandomMarketData:
@@ -178,8 +198,17 @@ class RandomMarketData:
 
 
 if __name__ == "__main__":
-    kd = KaikoData()
-    kd.prune()
+    kd = InstrumentDataset(min_points=100000)
+    start = time.time()
+    print(kd.get_random_window(n_points=10))
+    print(time.time() - start)
     # kd.request_OHLCVs()
 
+    # if technical_indicators is not None:
+    #     window['timestamps'] = window['timestamps']
+    #     window = pandas.DataFrame.from_dict(window)
+    #     print(window)
+    #     all_ta = ta.add_all_ta_features(window, open="open", high="high", low="low", close="close", volume="volume")
+    #     print(all_ta)
+    #
 

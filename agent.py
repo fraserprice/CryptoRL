@@ -5,17 +5,21 @@ import multiprocessing
 import numpy as np
 from scipy.stats import binned_statistic
 
-from stable_baselines.common.policies import MlpPolicy, MlpLstmPolicy, LstmPolicy
+from stable_baselines.common.policies import MlpPolicy, MlpLstmPolicy, FeedForwardPolicy
 from stable_baselines.common.vec_env import SubprocVecEnv
-from stable_baselines import PPO2, PPO1
+from stable_baselines import PPO2
 from env import MarketOHLCVEnv
+import tensorflow as tf
+from stable_baselines.a2c.utils import conv, linear, conv_to_fc
 
 
 class TraderAgent:
-    def __init__(self, market_env, n_env=multiprocessing.cpu_count()):
+    def __init__(self, market_env, n_env=multiprocessing.cpu_count(), mode='train'):
         self.base_env = market_env
-        self.env = SubprocVecEnv([lambda: market_env() for _ in range(n_env)])
+        self.n_env = n_env
+        self.env = SubprocVecEnv([lambda: market_env(mode=mode) for _ in range(n_env)])
         self.model = None
+        self.mode = mode
 
     def load_model(self, path):
         print("Loading model")
@@ -26,8 +30,8 @@ class TraderAgent:
             raise AssertionError("Model does not exist- cannot be saved.")
         self.model.save(path)
 
-    def new_model(self, policy=MlpPolicy, gamma=0.99):
-        self.model = PPO2(policy, self.env, verbose=1, gamma=gamma)
+    def new_model(self, policy=MlpPolicy, gamma=0.99, lr=0.00025):
+        self.model = PPO2(policy, self.env, verbose=1, gamma=gamma, n_steps=int(256 / self.n_env), learning_rate=lr)
 
     def learn(self, timesteps, callback=None):
         if self.model is None:
@@ -41,9 +45,21 @@ class TraderAgent:
             action, _states = self.model.predict(obs)
             obs, reward, done, info = env.step(action)
             env.render()
-            time.sleep(timestep_sleep)
+            # time.sleep(timestep_sleep)
             if done:
                 print("====================")
+                obs = env.reset()
+
+    def evaluate(self, n_episodes=100):
+        assert self.mode == 'test', "Must be in test mode for evaluation"
+        episode_rewards = []
+        env = self.base_env()
+        obs = env.reset()
+        for i in range(n_episodes):
+            action, _states = self.model.predict(obs)
+            obs, reward, done, info = env.step(action)
+            if done:
+                episode_rewards.append(reward)
                 obs = env.reset()
 
 
@@ -124,23 +140,43 @@ class LossPlotter:
 
 class CustomMlpPolicy(MlpPolicy):
     def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, **_kwargs):
-        super().__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, layers=[128, 128, 128], **_kwargs)
+        super().__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch,
+                         layers=[128, 100, 64, 32, 16], **_kwargs)
+
+
+class CustomCnnPolicy(FeedForwardPolicy):
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, **_kwargs):
+        super().__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch,
+                         layers=[64, 32], **_kwargs, cnn_extractor=cnn_extractor)
 
 
 class CustomMlpLstmPolicy(MlpLstmPolicy):
     def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, **_kwargs):
-        super().__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, layers=[64, 128, 256, 256, 128, 64],
+        super().__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, layers=[48, 36, 24, 12, 6],
                          **_kwargs)
 
 
-if __name__ == "__main__":
-    name = "trader_tov_disc"
-    ppo_agent = TraderAgent(MarketOHLCVEnv, n_env=1)
+def cnn_extractor(scaled_images, channels=1, w=6, h=50):
+    print(f"========= REAL SHAPE: {scaled_images.shape} ===========")
+    original_shape = scaled_images.shape[1]
+    print(f"========= SHAPE: {original_shape} ===========")
+    scaled_images = tf.reshape(scaled_images, (-1, h, w,  channels))
+    activ = tf.nn.relu
+    layer_1 = activ(conv(scaled_images, 'c1', n_filters=32, filter_size=w, stride=1, init_scale=np.sqrt(2)))
+    layer_2 = activ(conv(layer_1, 'c2', n_filters=64, filter_size=1, stride=1, init_scale=np.sqrt(2)))
+    layer_3 = activ(conv(layer_2, 'c3', n_filters=128, filter_size=1, stride=1, init_scale=np.sqrt(2)))
+    layer_3 = conv_to_fc(layer_3)
+    return activ(linear(layer_3, 'fc1', n_hidden=128, init_scale=np.sqrt(2)))
 
-    # ppo_agent.load_model("models/" + name)
-    ppo_agent.new_model(policy=CustomMlpPolicy, gamma=0.995)
+
+def run_train(name, load=False):
+    ppo_agent = TraderAgent(MarketOHLCVEnv, n_env=8, mode='train')
+    if load:
+        ppo_agent.load_model("models/" + name)
+    else:
+        ppo_agent.new_model(policy=CustomCnnPolicy, gamma=0.995)
     loss_plotter = LossPlotter(max_points=10000000)
-    save_interval = 100000
+    save_interval = 50000
     for i in range(0, 50000000, save_interval):
         ppo_agent.learn(save_interval, callback=loss_plotter.get_plot_callback(verbose=True, filename="figures/" + name,
                                                                                checkpoint_interval=60))
@@ -148,5 +184,15 @@ if __name__ == "__main__":
         loss_plotter.save("figures/" + name)
         ppo_agent.save_model("models/" + name)
 
-    # ppo_agent.load_model("models/" + name)
-    # ppo_agent.demo(timestep_sleep=0.2)
+
+def run_demo(name):
+    ppo_agent = TraderAgent(MarketOHLCVEnv, n_env=1, mode='test')
+    ppo_agent.load_model("models/" + name)
+    ppo_agent.demo(timestep_sleep=0.)
+
+
+if __name__ == "__main__":
+    name = "trader_conv_50-pen_vol"
+
+    # run_train(name, load=True)
+    run_demo(name)
