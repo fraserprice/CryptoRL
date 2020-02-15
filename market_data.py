@@ -1,20 +1,31 @@
 # AIO class for representation of market data and incremental access
-import json
+import math
+import os
+import re
 
 import pandas
-import pymongo
 import random
 import time
 import requests
-import ta
 from pymongo import MongoClient
-from pymongo.errors import BulkWriteError
+from binance.client import Client
 from requests.exceptions import HTTPError, ChunkedEncodingError
 
-API_KEY = 'b4fda6c9cfa8c173209c61171bd1b4aa'
+KAIKO_API_KEY = 'b4fda6c9cfa8c173209c61171bd1b4aa'
+BINANCE_API_KEY = 'xE0pxPbbPXmarmETXqgBoZSAPba9nr5Wy3pfOjmoOUAK6A0VQ2a2DpK4wonrzJgj'
+BINANCE_API_SECRET = 'NT6ZJ8SKa2bQHrvDcXpYNg3ThZsgOFUibzjeAJ7HBt3X0JZd6YkwkQDPTjhvoQbP'
+MAX_DOC_SIZE = 150000
+binance_klines_indices = {
+    'open': 1,
+    'high': 2,
+    'low': 3,
+    'close': 4,
+    'volume': 5,
+    'timestamps': 6
+}
 
 
-class KaikoInstrument:
+class HistoricalInstrument:
     """
     Interface for financial instrument OHLCV + ta data. self.data is of form:
 
@@ -32,7 +43,8 @@ class KaikoInstrument:
         'volume': list
     }
     """
-    def __init__(self, instrument, interval='1m', api_key=API_KEY):
+
+    def __init__(self, instrument, interval='1m', api_key=KAIKO_API_KEY):
         self.api_key = api_key
         self.data = instrument
         self.interval = interval
@@ -47,10 +59,24 @@ class KaikoInstrument:
     def to_dict(self):
         return self.data
 
-    def request_OHLCV(self, interval='1m'):
+    def load_binance_klines(self, csv_path):
+        df = pandas.read_csv(csv_path)
+        metrics = ['close_time', 'open', 'close', 'high', 'low', 'volume']
+        for metric in metrics:
+            save_metric = "timestamps" if metric == "close_time" else metric
+            to_load = list(df[metric])
+            if save_metric == "timestamps":
+                print("Converting to timestamp...")
+                to_load = [t * 1000 for t in to_load]
+                print("Done conversion")
+            self.data[save_metric] = [float(point) for point in to_load]
+        self.data['size'] = len(self.data['open'])
+
+    def request_kaiko_klines(self, interval='1m'):
         try:
             initial_res = requests.get(
-                f'https://eu.market-api.kaiko.io/v1/data/trades.latest/exchanges/{self.data["exchange"]}/{self.data["class"]}/{self.data["code"]}/aggregations/ohlcv',
+                f'https://eu.market-api.kaiko.io/v1/data/trades.latest/exchanges/{self.data["exchange"]}/'
+                f'{self.data["class"]}/{self.data["code"]}/aggregations/ohlcv',
                 headers={f'X-Api-Key': self.api_key, 'Accept': 'application/json'},
                 params={'interval': interval, 'page_size': 100000}
             )
@@ -58,7 +84,7 @@ class KaikoInstrument:
         except (HTTPError, ChunkedEncodingError) as e:
             print(f"Retrying: {e}")
             time.sleep(5)
-            return self.request_OHLCV(interval=interval)
+            return self.request_kaiko_klines(interval=interval)
         OHLCV = initial_res.json()['data']
         if 'next_url' in initial_res.json():
             next_url = initial_res.json()['next_url']
@@ -75,7 +101,7 @@ class KaikoInstrument:
                     break
                 except:
                     break
-        for metric in ("timestamp", "open", "high", "low", "close", "volume"):
+        for metric in ("timestamps", "open", "high", "low", "close", "volume"):
             self.data[metric] = [float(point[metric]) for point in OHLCV]
         print(f"{self}\tTotal size: {len(self.data['open'])}")
 
@@ -93,8 +119,50 @@ class KaikoInstrument:
         }
 
 
-class InstrumentDataset:
-    def __init__(self, min_points=50000, db_host="mongodb://localhost:27017/", api_key=API_KEY):
+class RealtimeInstrumentData:
+    def __init__(self, symbol, window_size=10, keys=('timestamps', 'open', 'high', 'low', 'close', 'volume')):
+        self.symbol = symbol
+        self.window_size = window_size
+        self.window = None
+        self.__binance_client = Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
+        self.keys = keys
+        self.init_timestamp_unix = None
+
+    def retrieve_latest_window(self):
+        last_timestep = self.window['timestamps'][-1]
+
+        kline = self.__binance_client.get_klines(symbol=self.symbol, limit=1, interval='1m')[0]
+        curr_timestamp = self.__get_relative_timestamp(kline[binance_klines_indices['timestamps']])
+
+        if curr_timestamp == last_timestep:
+            self.window['close'][-1] = self.get_latest_price()
+            return self.window, False
+
+        for k in self.keys:
+            point = float(kline[binance_klines_indices[k]])
+            if k == 'timestamps':
+                self.window['timestamps'].append(self.__get_relative_timestamp(point))
+            else:
+                self.window[k].append(point)
+        return self.window, True
+
+    def init_window(self):
+        klines = self.__binance_client.get_klines(symbol=self.symbol, limit=self.window_size, interval='1m')
+        self.window = {k: [float(step[binance_klines_indices[k]]) for step in klines] for k in self.keys}
+        self.init_timestamp_unix = self.window['timestamps'][0]
+        self.window['timestamps'] = [self.__get_relative_timestamp(t) for t in self.window['timestamps']]
+
+        return self.window
+
+    def get_latest_price(self):
+        return float(self.__binance_client.get_symbol_ticker(symbol=self.symbol)['price'])
+
+    def __get_relative_timestamp(self, unix_timestamp):
+        return (unix_timestamp - self.init_timestamp_unix) / 60000
+
+
+class HistoricalInstrumentDataset:
+    def __init__(self, min_points=0, db_host="mongodb://localhost:27017/", api_key=KAIKO_API_KEY):
         self.api_key = api_key
         self.min_points = min_points
         self.exchanges = {}
@@ -107,16 +175,15 @@ class InstrumentDataset:
         self.__split_collection = self.__db["splits"]
         self.load_split()
 
-    def get_random_window(self, n_points=200, minute_timesteps=True, split='test', ta=None):
+    def get_random_window(self, n_points=200, minute_timestamps=True, split='test', ta=None):
         instrument_id = random.choice(self.test_ids if split == 'test' else self.train_ids)
-        instrument = KaikoInstrument(self.__instrument_collection.find_one({'_id': instrument_id}))
+        instrument = HistoricalInstrument(self.__instrument_collection.find_one({'_id': instrument_id}))
         window = instrument.get_random_OHLCV_window(n_points=n_points)
-        if minute_timesteps:
+        if minute_timestamps:
             window['timestamps'] = [(t - window['timestamps'][0]) / 60000 for t in window['timestamps']]
         return window
 
     def get_instrument_ids(self):
-        self.exchanges = self.__exchange_collection.find()
         return self.__instrument_collection.distinct('_id', filter={f'open.{self.min_points}': {'$exists': True}})
 
     def create_split(self, train_prop=0.95):
@@ -135,80 +202,111 @@ class InstrumentDataset:
         self.train_ids, self.test_ids = split['train'], split['test']
         print(f"Number of train instruments: {len(self.train_ids)}\nNumber of test instruments: {len(self.test_ids)}")
 
-    def request_exchanges(self, override_cache=False):
+    def request_exchanges(self):
         r = requests.get('https://reference-data-api.kaiko.io/v1/exchanges')
         self.exchanges = r.json()
 
-    def request_OHLCVs(self, override_cache=False, interval='1m'):
+    def save_all_kaiko_data(self, override_cache=False, interval='1m'):
         r = requests.get('https://reference-data-api.kaiko.io/v1/instruments')
         instruments = r.json()['data']
         for i, instrument_data in enumerate(instruments):
-            instrument = KaikoInstrument(instrument_data, interval=interval)
-            if self.__instrument_collection.find_one({'_id': str(instrument)}) is not None and not override_cache:
-                print(f"{str(instrument)}: Already Cached")
-                continue
-            else:
-                self.to_update.append(str(instrument))
-                instrument.request_OHLCV()
+            instrument = HistoricalInstrument(instrument_data, interval=interval)
+            instrument.request_kaiko_klines()
+            self.save_instrument(instrument, override_cache=override_cache)
             if i % 100 == 0:
                 print(f"Saving {i}/{len(instruments)}")
-                self.save()
-        self.save()
 
-    def save(self):
-        print(f"To update: {self.to_update}")
-        for instrument in self.to_update:
-            self.__instrument_collection.update_one({'_id': str(instrument)}, {"$set": instrument.to_dict()}, upsert=True)
-        if len(self.exchanges) > 0:
-            self.__exchange_collection.insert_many(self.exchanges)
-        self.to_update = []
+    def save_all_binance_data(self, data_dir='data', override_cache=True):
+        for file in os.listdir(data_dir):
+            filepath = os.path.join(data_dir, file)
+            instrument_data = {
+                'exchange_code': 'binanceapi',
+                'code': re.search('[A-Z]+\-', file).group(0)[:-1].lower(),
+                'class': 'option',
+                'interval': '1m',
+            }
+            instrument = HistoricalInstrument(instrument_data)
+            print(f"Loading csv for {file}")
+            instrument.load_binance_klines(filepath)
+            print(f"Saving {str(instrument)}")
+            self.save_instrument(instrument, override_cache=override_cache)
+            print("Succesfully saved, deleting CSV")
+            os.remove(filepath)
+            assert not os.path.exists(filepath)
 
+    def save_instrument(self, instrument, override_cache=False, max_doc_size=MAX_DOC_SIZE):
+        if self.__instrument_collection.find_one(
+                {'_id': {"$regex": 'str(instrument).*'}}) is not None and not override_cache:
+            print(f"{str(instrument)}: Already Cached")
+        else:
+            size = instrument.data['size']
+            if size > max_doc_size:
+                n_docs = math.ceil(size / max_doc_size)
+                print(f"Size {size} larger than max- splitting into {n_docs} docs")
+                for i in range(n_docs):
+                    is_last = i == n_docs - 1
+                    start = i * max_doc_size
+                    end = (start + max_doc_size) if not is_last else size
+                    _id = str(instrument) + f':{start}:{end}'
+                    doc = {k: (v if not isinstance(v, list) else v[start:end]) for k, v in instrument.data.items()}
+                    assert len(doc['open']) == (
+                        max_doc_size if not is_last else size % max_doc_size), "You done fucked up lmao"
+                    doc['_id'] = _id
+                    doc['size'] = max_doc_size if not is_last else size % max_doc_size
+                    self.__instrument_collection.update_one({'_id': _id}, {"$set": doc}, upsert=True)
+            else:
+                print("Size ok, saving")
+                doc = instrument.to_dict()
+                _id = str(instrument) + f'0:{size}'
+                doc['_id'] = _id
+                self.__instrument_collection.update_one({'_id': _id}, {"$set": instrument.to_dict()}, upsert=True)
 
-class RandomMarketData:
-    def __init__(self):
-        self.data = None
-        self.current_point = 0
-        self.market_encoder = None
+    def get_instrument(self, id):
+        return self.__instrument_collection.find({'_id': id})
 
-    def load_csv(self):
-        pass
-
-    def load_raw(self, data):
-        self.data = data
-
-    def get_last_n_points(self, n):
-        data = []
-        for i in range(n):
-            index = self.current_point - n + i
-            data.append(self.data[index] if index >= 0 else -1)
-        return data
-
-    def retrieve_data(self, start, end, interval):
-        data = []
-        for i in range(start, end, interval):
-            data.append(self.data[i])
-        return data
-
-    def next(self):
-        self.current_point += 1
-        return self.data[self.current_point - 1]
-
-    def reset(self):
-        self.current_point = 0
+    def update_data(self):
+        max_size = 0
+        print(self.__instrument_collection.count())
+        for doc in self.__instrument_collection.find():
+            if doc['_id'][-2:] != '1m':
+                split = doc['_id'].split(':')
+                if split[-1] == split[-3] and split[-2] == split[-4]:
+                    print("Whoops, fucked up")
+                    prev_id = doc['_id']
+                    doc['_id'] = ':'.join(split[:-2])
+                    print(doc['_id'])
+                    self.__instrument_collection.update_one({'_id': doc['_id']}, {"$set": doc}, upsert=True)
+                    assert self.__instrument_collection.find_one({'_id': doc['_id']})['open'] is not None
+                    self.__instrument_collection.remove({'_id': prev_id})
+                    assert self.__instrument_collection.find_one({'_id': prev_id}) is None
+                else:
+                    print("Already updated")
+                continue
+            print("Updating ")
+            prev_id = doc['_id']
+            size = len(doc['open'])
+            if size > max_size:
+                max_size = size
+            doc['_id'] = prev_id + f':0:{size}'
+            print(doc['_id'])
+            doc['size'] = size
+            self.__instrument_collection.update_one({'_id': doc['_id']}, {"$set": doc}, upsert=True)
+            assert self.__instrument_collection.find_one({'_id': doc['_id']})['open'] is not None
+            self.__instrument_collection.remove({'_id': prev_id})
+            assert self.__instrument_collection.find_one({'_id': prev_id}) is None
+        print(max_size)
 
 
 if __name__ == "__main__":
-    kd = InstrumentDataset(min_points=100000)
-    start = time.time()
-    print(kd.get_random_window(n_points=10))
-    print(time.time() - start)
-    # kd.request_OHLCVs()
+    id = HistoricalInstrumentDataset(min_points=100000)
+    # id.create_split()
+    # id.save_all_binance_data()
 
-    # if technical_indicators is not None:
-    #     window['timestamps'] = window['timestamps']
-    #     window = pandas.DataFrame.from_dict(window)
-    #     print(window)
-    #     all_ta = ta.add_all_ta_features(window, open="open", high="high", low="low", close="close", volume="volume")
-    #     print(all_ta)
-    #
+    binance_client = Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
+    # print(binance_client.get_avg_price(symbol='ETHBTC'))
+    # print(binance_client.get_klines(symbol='ETHBTC', interval='1m', limit=2))
+    print(binance_client.get_symbol_ticker(symbol='ETHBTC'))
 
+    # rt = RealtimeInstrumentData('ETHBTC')
+    # rt.get_window()
+    # print(rt.window)

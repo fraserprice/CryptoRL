@@ -1,23 +1,28 @@
+import statistics
+
 import matplotlib
+from matplotlib import pyplot as plt
 import time
 
 import multiprocessing
 import numpy as np
+import scipy.stats as stats
+import math
 from scipy.stats import binned_statistic
 
 from stable_baselines.common.policies import MlpPolicy, MlpLstmPolicy, FeedForwardPolicy
 from stable_baselines.common.vec_env import SubprocVecEnv
 from stable_baselines import PPO2
-from env import MarketOHLCVEnv
+from env import SingleTradeEnv, ProfitEnv
 import tensorflow as tf
 from stable_baselines.a2c.utils import conv, linear, conv_to_fc
 
 
 class TraderAgent:
-    def __init__(self, market_env, n_env=multiprocessing.cpu_count(), mode='train'):
-        self.base_env = market_env
+    def __init__(self, env_generator, n_env=multiprocessing.cpu_count(), mode='train'):
+        self.base_env_generator = env_generator
         self.n_env = n_env
-        self.env = SubprocVecEnv([lambda: market_env(mode=mode) for _ in range(n_env)])
+        self.env = SubprocVecEnv([env_generator for _ in range(n_env)])
         self.model = None
         self.mode = mode
 
@@ -31,21 +36,21 @@ class TraderAgent:
         self.model.save(path)
 
     def new_model(self, policy=MlpPolicy, gamma=0.99, lr=0.00025):
-        self.model = PPO2(policy, self.env, verbose=1, gamma=gamma, n_steps=int(256 / self.n_env), learning_rate=lr)
+        self.model = PPO2(policy, self.env, verbose=1, gamma=gamma, n_steps=int(512 / self.n_env), learning_rate=lr)
 
     def learn(self, timesteps, callback=None):
         if self.model is None:
             self.new_model()
         self.model.learn(total_timesteps=timesteps, callback=callback)
 
-    def demo(self, timestep_sleep=0.2):
-        env = self.base_env()
+    def demo(self):
+        env = self.base_env_generator()
         obs = env.reset()
+        env.render()
         while True:
             action, _states = self.model.predict(obs)
             obs, reward, done, info = env.step(action)
             env.render()
-            # time.sleep(timestep_sleep)
             if done:
                 print("====================")
                 obs = env.reset()
@@ -53,20 +58,27 @@ class TraderAgent:
     def evaluate(self, n_episodes=100):
         assert self.mode == 'test', "Must be in test mode for evaluation"
         episode_rewards = []
-        env = self.base_env()
+        env = self.base_env_generator()
         obs = env.reset()
-        for i in range(n_episodes):
+        i = 0
+        while True:
+            print(f"Episode {i}")
             action, _states = self.model.predict(obs)
             obs, reward, done, info = env.step(action)
             if done:
                 episode_rewards.append(reward)
                 obs = env.reset()
+                i += 1
+                if i == n_episodes:
+                    break
 
-
-#
-# lp = LossPlotter()
-# def learn_callback():
-#     pass
+        mu = statistics.mean(episode_rewards)
+        variance = statistics.variance(episode_rewards)
+        sigma = math.sqrt(variance)
+        # x = np.linspace(mu - 3 * sigma, mu + 3 * sigma, 100)
+        # plt.plot(x, stats.norm.pdf(x, mu, sigma))
+        # plt.show()
+        return mu, variance
 
 
 class LossPlotter:
@@ -156,21 +168,20 @@ class CustomMlpLstmPolicy(MlpLstmPolicy):
                          **_kwargs)
 
 
-def cnn_extractor(scaled_images, channels=1, w=6, h=50):
-    print(f"========= REAL SHAPE: {scaled_images.shape} ===========")
-    original_shape = scaled_images.shape[1]
-    print(f"========= SHAPE: {original_shape} ===========")
-    scaled_images = tf.reshape(scaled_images, (-1, h, w,  channels))
-    activ = tf.nn.relu
-    layer_1 = activ(conv(scaled_images, 'c1', n_filters=32, filter_size=w, stride=1, init_scale=np.sqrt(2)))
-    layer_2 = activ(conv(layer_1, 'c2', n_filters=64, filter_size=1, stride=1, init_scale=np.sqrt(2)))
-    layer_3 = activ(conv(layer_2, 'c3', n_filters=128, filter_size=1, stride=1, init_scale=np.sqrt(2)))
-    layer_3 = conv_to_fc(layer_3)
-    return activ(linear(layer_3, 'fc1', n_hidden=128, init_scale=np.sqrt(2)))
+def run_demo(env_gen, name):
+    ppo_agent = TraderAgent(env_gen, n_env=1)
+    ppo_agent.load_model("models/" + name)
+    ppo_agent.demo()
 
 
-def run_train(name, load=False):
-    ppo_agent = TraderAgent(MarketOHLCVEnv, n_env=8, mode='train')
+def run_eval(env_gen, name, n_episodes=10000):
+    ppo_agent = TraderAgent(env_gen, n_env=1)
+    ppo_agent.load_model("models/" + name)
+    return ppo_agent.evaluate(n_episodes=n_episodes)
+
+
+def run_train(env_gen, name, n_env=16, load=False):
+    ppo_agent = TraderAgent(env_gen, n_env=n_env)
     if load:
         ppo_agent.load_model("models/" + name)
     else:
@@ -185,14 +196,76 @@ def run_train(name, load=False):
         ppo_agent.save_model("models/" + name)
 
 
-def run_demo(name):
-    ppo_agent = TraderAgent(MarketOHLCVEnv, n_env=1, mode='test')
-    ppo_agent.load_model("models/" + name)
-    ppo_agent.demo(timestep_sleep=0.)
+def run_single_trade_train(name, load=False, min_points=100000, trade_fee=0.15, n_env=16):
+    env_gen = lambda: SingleTradeEnv(mode='rain',
+                                     trade_fee=trade_fee,
+                                     min_points=min_points)
+    run_train(env_gen, name, n_env=n_env, load=load)
+
+
+def run_single_trade_demo(name, min_points=50000, realtime=False, symbol=None, trade_fee=0.15):
+    env_gen = lambda: SingleTradeEnv(mode='test',
+                                     trade_fee=trade_fee,
+                                     min_points=min_points,
+                                     realtime=realtime,
+                                     symbol=symbol)
+    run_demo(env_gen, name)
+
+
+def run_single_trade_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50000):
+    env_gen = lambda: SingleTradeEnv(mode='test',
+                                     trade_fee=trade_fee,
+                                     min_points=min_points)
+    return run_eval(env_gen, name, n_episodes=n_episodes)
+
+
+def run_profit_train(name, load=False, min_points=100000, trade_fee=0.15, n_env=16, init_capital=50000,
+                     action_granularity=10):
+    env_gen = lambda: ProfitEnv(mode='train',
+                                trade_fee=trade_fee,
+                                min_points=min_points,
+                                init_capital=init_capital,
+                                action_granularity=action_granularity)
+    run_train(env_gen, name, n_env=n_env, load=load)
+
+
+def run_profit_demo(name, min_points=50000, realtime=False, symbol=None, trade_fee=0.15, action_granularity=10, init_capital=50000):
+    env_gen = lambda: ProfitEnv(mode='test',
+                                trade_fee=trade_fee,
+                                min_points=min_points,
+                                realtime=realtime,
+                                symbol=symbol,
+                                action_granularity=action_granularity,
+                                init_capital=init_capital)
+    run_demo(env_gen, name)
+
+
+def run_profit_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50000, action_granularity=10, init_capital=50000):
+    env_gen = lambda: ProfitEnv(mode='test',
+                                trade_fee=trade_fee,
+                                min_points=min_points,
+                                action_granularity=action_granularity,
+                                init_capital=init_capital)
+    return run_eval(env_gen, name, n_episodes=n_episodes)
+
+
+def cnn_extractor(scaled_images, channels=1, w=8, h=100):
+    print(f"========= REAL SHAPE: {scaled_images.shape} ===========")
+    original_shape = scaled_images.shape[1]
+    print(f"========= SHAPE: {original_shape} ===========")
+    scaled_images = tf.reshape(scaled_images, (-1, h, w, channels))
+    activ = tf.nn.relu
+    layer_1 = activ(conv(scaled_images, 'c1', n_filters=32, filter_size=w, stride=1, init_scale=np.sqrt(2)))
+    layer_2 = activ(conv(layer_1, 'c2', n_filters=64, filter_size=1, stride=1, init_scale=np.sqrt(2)))
+    layer_3 = activ(conv(layer_2, 'c3', n_filters=128, filter_size=1, stride=1, init_scale=np.sqrt(2)))
+    layer_3 = conv_to_fc(layer_3)
+    return activ(linear(layer_3, 'fc1', n_hidden=128, init_scale=np.sqrt(2)))
 
 
 if __name__ == "__main__":
-    name = "trader_conv_50-pen_vol"
+    inp_name = "profit_tohlcv_100obs_100k-min_075fee_10k-ep_0-02-cap-pen"
 
-    # run_train(name, load=True)
-    run_demo(name)
+    run_profit_train(inp_name, load=False, init_capital=50000, action_granularity=10, trade_fee=0.075)
+
+    # run_single_trade_train(inp_name, load=False, min_points=100000, n_env=32)
+    # run_single_trade_demo(name, realtime=False, symbol='ETHBTC')
