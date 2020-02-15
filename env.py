@@ -157,20 +157,21 @@ class MarketEnv(Env, ABC):
 
 
 class ProfitEnv(MarketEnv):
-    def __init__(self, trade_fee=0.075, n_obs=100, ep_len=10000, mode='train', min_points=100000,
+    def __init__(self, trade_fee=0.075, n_obs=200, ep_len=10000, mode='train', min_points=100000,
                  realtime=False, symbol=None, init_capital=50000, action_granularity=10, min_trade_val=100):
         super().__init__(trade_fee=trade_fee, ep_len=ep_len, realtime=realtime, mode=mode, min_points=min_points, symbol=symbol,
                          n_obs=n_obs)
 
         # long_amt, short_amt, exit_short_amt, exit_long_amt
-        self.action_space = spaces.MultiDiscrete([action_granularity] * 2)
+        self.action_space = spaces.MultiDiscrete([2] * 2 + [action_granularity] * 2)
         self.action_granularity = action_granularity
 
-        self.obs_dims = 2 + len(self.obs_keys)
+        self.obs_dims = 4 + len(self.obs_keys)
         self.observation_space = spaces.Box(low=-3, high=3, shape=(self.n_obs, self.obs_dims,), dtype='float32')
 
         self.init_capital = init_capital
         self.min_trade_val = min_trade_val
+        self.curr_timestamp = 0
         self.shorted_value, self.shorted_amt, self.longed_value, self.longed_amt, self.capital = 0, 0, 0, 0, self.init_capital
         self.short_timestamps, self.short_enters, self.short_qtys = [], [], []
         self.long_timestamps, self.long_enters, self.long_qtys = [], [], []
@@ -180,39 +181,41 @@ class ProfitEnv(MarketEnv):
         self.reset()
 
     def step(self, action):
-        long_amt, exit_long_amt = action
-        print(f"Action: {action}")
-        timestamp, close_p = self._get_data_index(self.steps + self.n_obs - 1, keys=('timestamps', 'close'))
-        hold = sum([long_amt, exit_long_amt]) == 0
-        long, exit_long = (amt > 0 for amt in (long_amt, exit_long_amt))
+        long, exit_long, long_amt, exit_long_amt = action
+        self.curr_timestamp, close_p = self._get_data_index(self.steps + self.n_obs - 1, keys=('timestamps', 'close'))
+        hold = sum([long, exit_long]) == 0
+        long, exit_long = (x == 1 for x in (long, exit_long))
         self.longed_value = self.longed_amt * close_p
 
         if close_p <= 0 or hold:
             pass
+
         if exit_long > 0:
-            exit_val = self.longed_value * (self.action_granularity - exit_long_amt) / self.action_granularity
+            exit_val = min(self.longed_value, self.init_capital * (self.action_granularity - exit_long_amt) / self.action_granularity)
             taxed_exit_val = exit_val * (1 - self.trade_fee / 100)
             exit_amt = exit_val / close_p
             if exit_val >= self.min_trade_val:
-                self.long_exit_timestamps.append(timestamp)
+                self.long_exit_timestamps.append(self.curr_timestamp)
                 self.long_exits.append(close_p)
                 self.long_exit_qtys.append(exit_amt)
                 self.longed_amt -= exit_amt
                 self.longed_value -= exit_val
                 self.capital += taxed_exit_val
                 # print(f"Exiting {round(exit_amt, 5)} at {round(exit_val, 5)}")
+
         if long > 0:
-            enter_cap = self.capital * (self.action_granularity - long_amt) / self.action_granularity
+            enter_cap = min(self.capital, self.init_capital * (self.action_granularity - long_amt) / self.action_granularity)
             taxed_enter_cap = enter_cap * (1 - self.trade_fee / 100)
             n_stocks = taxed_enter_cap / close_p
             if enter_cap >= self.min_trade_val:
-                self.long_timestamps.append(timestamp)
+                self.long_timestamps.append(self.curr_timestamp)
                 self.long_enters.append(close_p)
                 self.long_qtys.append(enter_cap)
                 self.longed_amt += n_stocks
                 self.longed_value += taxed_enter_cap
                 self.capital -= enter_cap
                 # print(f"Longing {round(enter_cap, 5)} at {round(n_stocks, 5)}")
+
         # if exit_short:
         #     pass
         # if short:
@@ -220,16 +223,18 @@ class ProfitEnv(MarketEnv):
         if self.steps == self.episode_length:
             pass
 
-        print(f"Capital:\t{int(self.capital)}\tStockVal:\t{int(self.longed_value)}\tAction: {action}")
         reward = (self.capital + self.longed_value) / self.init_capital - 1
-        reward -= 0.02 * self.capital / self.init_capital  # Punish for having funds not invested
+        # liquid_pen = 0.0005 * self.capital / self.init_capital  # Punish for having funds not invested
+        # reward -= liquid_pen
+
+        print(f"Capital:\t{int(self.capital)}\tStockVal:\t{int(self.longed_value)}\tAction:\t{action}\tRew:\t{reward}")
 
         self._update_window()
 
         return self._get_observation(), reward, self.steps == self.episode_length, {}
 
     def reset(self):
-        self.steps, self.done = 0, False
+        self.steps, self.curr_timestamp, self.done = 0, 0, False
         self.shorted_value, self.shorted_amt, self.longed_value, self.longed_amt, self.capital = 0, 0, 0, 0, self.init_capital
         self.short_timestamps, self.short_enters, self.short_qtys = [], [], []
         self.long_timestamps, self.long_enters, self.long_qtys = [], [], []
@@ -242,7 +247,9 @@ class ProfitEnv(MarketEnv):
         pass
 
     def _get_normalized_state_data(self):
-        return [val / self.init_capital for val in (self.capital, self.longed_value)]
+        return [val / self.init_capital for val in (self.capital, self.longed_value)] + \
+                [1 if len(self.long_timestamps) > 0 and self.curr_timestamp == self.long_timestamps[-1] else -1,
+                 1 if len(self.long_exit_timestamps) > 0 and self.curr_timestamp == self.long_exit_timestamps[-1] else -1]
 
 
 class SingleTradeEnv(MarketEnv):

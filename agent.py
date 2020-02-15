@@ -249,7 +249,7 @@ def run_profit_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50000, a
     return run_eval(env_gen, name, n_episodes=n_episodes)
 
 
-def cnn_extractor(scaled_images, channels=1, w=8, h=100):
+def cnn_extractor(scaled_images, channels=1, w=10, h=200):
     print(f"========= REAL SHAPE: {scaled_images.shape} ===========")
     original_shape = scaled_images.shape[1]
     print(f"========= SHAPE: {original_shape} ===========")
@@ -263,7 +263,7 @@ def cnn_extractor(scaled_images, channels=1, w=8, h=100):
 
 
 if __name__ == "__main__":
-    inp_name = "profit_tohlcv_100obs_100k-min_075fee_10k-ep_0-02-cap-pen"
+    inp_name = "profit_tohlcv_100obs_100k-min_00075fee_10k-ep"
 
     run_profit_train(inp_name, load=False, init_capital=50000, action_granularity=10, trade_fee=0.075)
 
