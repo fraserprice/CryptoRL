@@ -124,9 +124,7 @@ class LossPlotter:
 
             mean_reward = None
             if 'true_reward' in inp1:
-                reward = np.array(inp1['true_reward'])
-                zero_removed_reward = reward[reward != 0]
-                mean_reward = zero_removed_reward.mean()
+                mean_reward = np.array(inp1['true_reward']).mean()
             if 'info' in inp1:
                 print(inp1['info'])
             if mean_reward is not None:
@@ -263,9 +261,9 @@ def cnn_extractor(scaled_images, channels=1, w=10, h=200):
 
 
 if __name__ == "__main__":
-    inp_name = "profit_tohlcv_100obs_100k-min_00075fee_10k-ep"
+    inp_name = "profit_tohlcv_100obs_100k-min_0fee_10k-ep"
 
-    run_profit_train(inp_name, load=False, init_capital=50000, action_granularity=10, trade_fee=0.075)
+    run_profit_train(inp_name, load=False, init_capital=50000, action_granularity=10, trade_fee=0.)
 
     # run_single_trade_train(inp_name, load=False, min_points=100000, n_env=32)
     # run_single_trade_demo(name, realtime=False, symbol='ETHBTC')

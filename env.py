@@ -187,10 +187,12 @@ class ProfitEnv(MarketEnv):
         long, exit_long = (x == 1 for x in (long, exit_long))
         self.longed_value = self.longed_amt * close_p
 
+        reward = 0
+
         if close_p <= 0 or hold:
             pass
 
-        if exit_long > 0:
+        if exit_long:
             exit_val = min(self.longed_value, self.init_capital * (self.action_granularity - exit_long_amt) / self.action_granularity)
             taxed_exit_val = exit_val * (1 - self.trade_fee / 100)
             exit_amt = exit_val / close_p
@@ -201,9 +203,10 @@ class ProfitEnv(MarketEnv):
                 self.longed_amt -= exit_amt
                 self.longed_value -= exit_val
                 self.capital += taxed_exit_val
+                if self.longed_value == 0:
+                    reward = self.capital / self.init_capital - 1
                 # print(f"Exiting {round(exit_amt, 5)} at {round(exit_val, 5)}")
-
-        if long > 0:
+        elif long:
             enter_cap = min(self.capital, self.init_capital * (self.action_granularity - long_amt) / self.action_granularity)
             taxed_enter_cap = enter_cap * (1 - self.trade_fee / 100)
             n_stocks = taxed_enter_cap / close_p
@@ -223,8 +226,8 @@ class ProfitEnv(MarketEnv):
         if self.steps == self.episode_length:
             pass
 
-        reward = (self.capital + self.longed_value) / self.init_capital - 1
-        # liquid_pen = 0.0005 * self.capital / self.init_capital  # Punish for having funds not invested
+        # reward = (self.capital + self.longed_value) / self.init_capital - 1
+        # liquid_pen = 0.005 * self.capital / self.init_capital  # Punish for having funds not invested
         # reward -= liquid_pen
 
         print(f"Capital:\t{int(self.capital)}\tStockVal:\t{int(self.longed_value)}\tAction:\t{action}\tRew:\t{reward}")
