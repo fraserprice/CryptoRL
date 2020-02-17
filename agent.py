@@ -288,7 +288,7 @@ if __name__ == "__main__":
     # run_profit_train(prof_name, load=False, init_capital=50000, action_granularity=5, trade_fee=0., ep_len=500,
     #                  ignored_rews=(0, -0.01), n_env=64, n_obs=100)
 
-    sing_name = "conv_tohlcv_150obs_150eplen_100k-min_0fee_1-5-20-agg"
+    sing_name = "conv_tohlcv_150obs_150eplen_100k-min_0-15fee_1-5-20-agg"
     run_single_trade_train(sing_name, load=False, min_points=100000, n_env=64, aggregates=(1, 5, 20), n_obs=150,
-                           trade_fee=0., ep_len=150)
+                           trade_fee=0.15, ep_len=150)
     # run_single_trade_demo(sing_name, realtime=False, symbol='ETHBTC')
