@@ -300,10 +300,10 @@ class SingleTradeEnv(MarketEnv):
         reward = 0
         if close_p <= 0 or hold:
             if self.enter_timestamp is not None:
-                reward = -0.003
+                reward = -0.005
                 print(f"Penalizing for hold after enter: {reward}")
             else:
-                reward = -0.001
+                reward = -0.005
                 print(f"Penalizing for making no trade: {reward}")
         elif long or short:
             if self.enter_timestamp is None:

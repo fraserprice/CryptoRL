@@ -2,7 +2,7 @@
 
 --------------------------------------
 
-conv_tohlcv_150obs_150eplen_100k-min_0fee_1-5-20-agg
+conv_tohlcv_150obs_150eplen_100k-min_0-15fee_1-5-20-agg
 
 Invalid decision pen:   -0.1
 Hold no trade pen:      -0.001
@@ -11,6 +11,19 @@ Exit reward:            100 * (close_p - self.enter_value) / self.enter_value
 
 Observations:
 
-    ...
+    Quickly decides to only hold and not enter any trades
+
+--------------------------------------
+
+conv_tohlcv_150obs_150eplen_100k-min_0-15fee_1-5-20-agg
+
+Invalid decision pen:   -0.1
+Hold no trade pen:      -0.005
+Hold entered pen:       -0.005
+Exit reward:            100 * (close_p - self.enter_value) / self.enter_value
+
+Observations:
+
+    Quickly decides to only hold and not enter any trades
 
 --------------------------------------
