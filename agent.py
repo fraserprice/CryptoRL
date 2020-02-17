@@ -280,7 +280,7 @@ if __name__ == "__main__":
     inp_name = "profit_100obs_0fee_10k-ep_1-7-50agg_5gran"
 
     run_profit_train(inp_name, load=False, init_capital=50000, action_granularity=5, trade_fee=0., ep_len=10000,
-                     ignored_rews=(0, -0.01), n_env=128, n_obs=100)
+                     ignored_rews=(0, -0.01), n_env=128, n_obs=200)
 
     # run_single_trade_train(inp_name, load=False, min_points=100000, n_env=32)
     # run_single_trade_demo(name, realtime=False, symbol='ETHBTC')
