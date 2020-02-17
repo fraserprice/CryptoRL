@@ -11,6 +11,8 @@ from pymongo import MongoClient
 from binance.client import Client
 from requests.exceptions import HTTPError, ChunkedEncodingError
 
+from utils import aggregate_ohlcv_window, get_minute_difference, get_dict_of_lists_slice
+
 KAIKO_API_KEY = 'b4fda6c9cfa8c173209c61171bd1b4aa'
 BINANCE_API_KEY = 'xE0pxPbbPXmarmETXqgBoZSAPba9nr5Wy3pfOjmoOUAK6A0VQ2a2DpK4wonrzJgj'
 BINANCE_API_SECRET = 'NT6ZJ8SKa2bQHrvDcXpYNg3ThZsgOFUibzjeAJ7HBt3X0JZd6YkwkQDPTjhvoQbP'
@@ -105,17 +107,22 @@ class HistoricalInstrument:
             self.data[metric] = [float(point[metric]) for point in OHLCV]
         print(f"{self}\tTotal size: {len(self.data['open'])}")
 
-    def get_random_OHLCV_window(self, n_points=200):
-        print(f"{self}: Getting random window")
-        start_index = random.randint(0, len(self.data['open']) - n_points)
-        end_index = start_index + n_points
+    def get_random_aggregated_ohlcv_windows(self, n_points=200, aggregates=(1,), minute_timestamps=True):
+        print(f"{self}: Getting random windows")
+        max_aggregate = max(aggregates)
+        window_size = max_aggregate * n_points
+        start_index = random.randint(0, len(self.data['open']) - window_size)
+        end_index = start_index + window_size
+        full_window = get_dict_of_lists_slice(self.data,
+                                              start=start_index,
+                                              end=end_index,
+                                              keys=('timestamps', 'open', 'high', 'low', 'close', 'volume'))
         return {
-            "timestamps": self.data['timestamps'][start_index:end_index],
-            "open": self.data['open'][start_index:end_index],
-            "high": self.data['high'][start_index:end_index],
-            "low": self.data['low'][start_index:end_index],
-            "close": self.data['close'][start_index:end_index],
-            "volume": self.data['volume'][start_index:end_index],
+            aggregate:
+            aggregate_ohlcv_window(get_dict_of_lists_slice(full_window, start=window_size - n_points * aggregate),
+                                   aggregate,
+                                   minute_timestamps=minute_timestamps)
+            for aggregate in aggregates
         }
 
 
@@ -129,6 +136,8 @@ class RealtimeInstrumentData:
         self.init_timestamp_unix = None
 
     def retrieve_latest_window(self):
+        # TODO: Need to change to support multi-timescale convolutions
+        return NotImplementedError
         last_timestep = self.window['timestamps'][-1]
 
         kline = self.__binance_client.get_klines(symbol=self.symbol, limit=1, interval='1m')[0]
@@ -158,7 +167,7 @@ class RealtimeInstrumentData:
         return float(self.__binance_client.get_symbol_ticker(symbol=self.symbol)['price'])
 
     def __get_relative_timestamp(self, unix_timestamp):
-        return (unix_timestamp - self.init_timestamp_unix) / 60000
+        return get_minute_difference(self.init_timestamp_unix, unix_timestamp)
 
 
 class HistoricalInstrumentDataset:
@@ -175,13 +184,12 @@ class HistoricalInstrumentDataset:
         self.__split_collection = self.__db["splits"]
         self.load_split()
 
-    def get_random_window(self, n_points=200, minute_timestamps=True, split='test', ta=None):
+    def get_random_windows(self, n_points=200, minute_timestamps=True, split='test', aggregates=(1,)):
         instrument_id = random.choice(self.test_ids if split == 'test' else self.train_ids)
         instrument = HistoricalInstrument(self.__instrument_collection.find_one({'_id': instrument_id}))
-        window = instrument.get_random_OHLCV_window(n_points=n_points)
-        if minute_timestamps:
-            window['timestamps'] = [(t - window['timestamps'][0]) / 60000 for t in window['timestamps']]
-        return window
+        aggregated_windows = instrument.get_random_aggregated_ohlcv_windows(n_points=n_points, aggregates=aggregates,
+                                                                            minute_timestamps=minute_timestamps)
+        return aggregated_windows
 
     def get_instrument_ids(self):
         return self.__instrument_collection.distinct('_id', filter={f'open.{self.min_points}': {'$exists': True}})
@@ -265,48 +273,9 @@ class HistoricalInstrumentDataset:
         return self.__instrument_collection.find({'_id': id})
 
     def update_data(self):
-        max_size = 0
-        print(self.__instrument_collection.count())
-        for doc in self.__instrument_collection.find():
-            if doc['_id'][-2:] != '1m':
-                split = doc['_id'].split(':')
-                if split[-1] == split[-3] and split[-2] == split[-4]:
-                    print("Whoops, fucked up")
-                    prev_id = doc['_id']
-                    doc['_id'] = ':'.join(split[:-2])
-                    print(doc['_id'])
-                    self.__instrument_collection.update_one({'_id': doc['_id']}, {"$set": doc}, upsert=True)
-                    assert self.__instrument_collection.find_one({'_id': doc['_id']})['open'] is not None
-                    self.__instrument_collection.remove({'_id': prev_id})
-                    assert self.__instrument_collection.find_one({'_id': prev_id}) is None
-                else:
-                    print("Already updated")
-                continue
-            print("Updating ")
-            prev_id = doc['_id']
-            size = len(doc['open'])
-            if size > max_size:
-                max_size = size
-            doc['_id'] = prev_id + f':0:{size}'
-            print(doc['_id'])
-            doc['size'] = size
-            self.__instrument_collection.update_one({'_id': doc['_id']}, {"$set": doc}, upsert=True)
-            assert self.__instrument_collection.find_one({'_id': doc['_id']})['open'] is not None
-            self.__instrument_collection.remove({'_id': prev_id})
-            assert self.__instrument_collection.find_one({'_id': prev_id}) is None
-        print(max_size)
+        pass
 
 
 if __name__ == "__main__":
-    id = HistoricalInstrumentDataset(min_points=100000)
-    # id.create_split()
-    # id.save_all_binance_data()
-
-    binance_client = Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
-    # print(binance_client.get_avg_price(symbol='ETHBTC'))
-    # print(binance_client.get_klines(symbol='ETHBTC', interval='1m', limit=2))
-    print(binance_client.get_symbol_ticker(symbol='ETHBTC'))
-
-    # rt = RealtimeInstrumentData('ETHBTC')
-    # rt.get_window()
-    # print(rt.window)
+    hid = HistoricalInstrumentDataset(min_points=100000)
+    print(hid.get_random_windows(n_points=10, aggregates=(1, 7, 10, 50)))

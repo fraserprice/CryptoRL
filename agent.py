@@ -35,7 +35,7 @@ class TraderAgent:
             raise AssertionError("Model does not exist- cannot be saved.")
         self.model.save(path)
 
-    def new_model(self, policy=MlpPolicy, gamma=0.99, lr=0.00025):
+    def new_model(self, policy=MlpPolicy, gamma=0.995, lr=0.00025):
         self.model = PPO2(policy, self.env, verbose=1, gamma=gamma, n_steps=int(512 / self.n_env), learning_rate=lr)
 
     def learn(self, timesteps, callback=None):
@@ -119,12 +119,17 @@ class LossPlotter:
         self.plt.draw()
         self.plt.pause(0.001)
 
-    def get_plot_callback(self, checkpoint_interval=1000, filename=None, verbose=False):
+    def get_plot_callback(self, checkpoint_interval=1000, filename=None, verbose=False, ignored_rews=None):
         def f(inp1, _):
 
             mean_reward = None
             if 'true_reward' in inp1:
-                mean_reward = np.array(inp1['true_reward']).mean()
+                reward = np.array(inp1['true_reward'])
+                if ignored_rews is not None:
+                    reward = np.array([x for x in reward if x not in ignored_rews])
+                    if len(reward) == 0:
+                        reward = np.array([0])
+                mean_reward = reward.mean()
             if 'info' in inp1:
                 print(inp1['info'])
             if mean_reward is not None:
@@ -148,16 +153,33 @@ class LossPlotter:
         self.plt.savefig(filename)
 
 
+def cnn_extractor_gen(c=3, w=10, h=200):
+    def cnn_extractor(scaled_images, channels=c, w=w, h=h):
+        print(f"========= REAL SHAPE: {scaled_images.shape} ===========")
+        original_shape = scaled_images.shape[1]
+        print(f"========= SHAPE: {original_shape} ===========")
+        scaled_images = tf.reshape(scaled_images, (-1, h, w, channels))
+        activ = tf.nn.relu
+        layer_1 = activ(conv(scaled_images, 'c1', n_filters=32, filter_size=w, stride=1, init_scale=np.sqrt(2)))
+        layer_2 = activ(conv(layer_1, 'c2', n_filters=64, filter_size=1, stride=1, init_scale=np.sqrt(2)))
+        layer_3 = activ(conv(layer_2, 'c3', n_filters=128, filter_size=1, stride=1, init_scale=np.sqrt(2)))
+        layer_3 = conv_to_fc(layer_3)
+        return activ(linear(layer_3, 'fc1', n_hidden=128, init_scale=np.sqrt(2)))
+    return cnn_extractor
+
+
 class CustomMlpPolicy(MlpPolicy):
     def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, **_kwargs):
         super().__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch,
                          layers=[128, 100, 64, 32, 16], **_kwargs)
 
 
-class CustomCnnPolicy(FeedForwardPolicy):
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, **_kwargs):
-        super().__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch,
-                         layers=[64, 32], **_kwargs, cnn_extractor=cnn_extractor)
+def get_cnn_policy(c=3, w=10, h=200, fc=(64, 32)):
+    class CustomCnnPolicy(FeedForwardPolicy):
+        def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, **_kwargs):
+            super().__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch,
+                             layers=fc, **_kwargs, cnn_extractor=cnn_extractor_gen(c=c, w=w, h=h))
+    return CustomCnnPolicy
 
 
 class CustomMlpLstmPolicy(MlpLstmPolicy):
@@ -178,27 +200,32 @@ def run_eval(env_gen, name, n_episodes=10000):
     return ppo_agent.evaluate(n_episodes=n_episodes)
 
 
-def run_train(env_gen, name, n_env=16, load=False):
+# noinspection PyTypeChecker
+def run_cnn_train(env_gen, name, n_env=16, load=False, ignores_rews=None, c=3, w=10, h=200, fc=(64, 32)):
     ppo_agent = TraderAgent(env_gen, n_env=n_env)
     if load:
         ppo_agent.load_model("models/" + name)
     else:
-        ppo_agent.new_model(policy=CustomCnnPolicy, gamma=0.995)
+        ppo_agent.new_model(policy=get_cnn_policy(c=c, w=w, h=h, fc=fc), gamma=0.995)
     loss_plotter = LossPlotter(max_points=10000000)
     save_interval = 50000
     for i in range(0, 50000000, save_interval):
         ppo_agent.learn(save_interval, callback=loss_plotter.get_plot_callback(verbose=True, filename="figures/" + name,
-                                                                               checkpoint_interval=60))
+                                                                               checkpoint_interval=60,
+                                                                               ignored_rews=ignores_rews))
         print("Saving...")
         loss_plotter.save("figures/" + name)
         ppo_agent.save_model("models/" + name)
 
 
-def run_single_trade_train(name, load=False, min_points=100000, trade_fee=0.15, n_env=16):
-    env_gen = lambda: SingleTradeEnv(mode='rain',
+def run_single_trade_train(name, load=False, min_points=100000, trade_fee=0.15, n_env=16, ignore_zero_rew=False,
+                           n_obs=100, aggregates=(1, 7, 50), obs_dim=8):
+    env_gen = lambda: SingleTradeEnv(mode='train',
                                      trade_fee=trade_fee,
-                                     min_points=min_points)
-    run_train(env_gen, name, n_env=n_env, load=load)
+                                     min_points=min_points,
+                                     n_obs=n_obs)
+    run_cnn_train(env_gen, name, n_env=n_env, load=load, ignore_zero_rew=ignore_zero_rew, c=len(aggregates), h=n_obs,
+                  w=obs_dim)
 
 
 def run_single_trade_demo(name, min_points=50000, realtime=False, symbol=None, trade_fee=0.15):
@@ -218,13 +245,17 @@ def run_single_trade_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50
 
 
 def run_profit_train(name, load=False, min_points=100000, trade_fee=0.15, n_env=16, init_capital=50000,
-                     action_granularity=10):
+                     action_granularity=10, ep_len=1000, ignored_rews=None,
+                     n_obs=100, aggregates=(1, 7, 50), obs_dim=10, fc=(64, 32)):
     env_gen = lambda: ProfitEnv(mode='train',
                                 trade_fee=trade_fee,
                                 min_points=min_points,
                                 init_capital=init_capital,
-                                action_granularity=action_granularity)
-    run_train(env_gen, name, n_env=n_env, load=load)
+                                action_granularity=action_granularity,
+                                ep_len=ep_len,
+                                n_obs=n_obs)
+    run_cnn_train(env_gen, name, n_env=n_env, load=load, ignores_rews=ignored_rews,
+                  c=len(aggregates), h=n_obs, w=obs_dim, fc=fc)
 
 
 def run_profit_demo(name, min_points=50000, realtime=False, symbol=None, trade_fee=0.15, action_granularity=10, init_capital=50000):
@@ -247,23 +278,11 @@ def run_profit_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50000, a
     return run_eval(env_gen, name, n_episodes=n_episodes)
 
 
-def cnn_extractor(scaled_images, channels=1, w=10, h=200):
-    print(f"========= REAL SHAPE: {scaled_images.shape} ===========")
-    original_shape = scaled_images.shape[1]
-    print(f"========= SHAPE: {original_shape} ===========")
-    scaled_images = tf.reshape(scaled_images, (-1, h, w, channels))
-    activ = tf.nn.relu
-    layer_1 = activ(conv(scaled_images, 'c1', n_filters=32, filter_size=w, stride=1, init_scale=np.sqrt(2)))
-    layer_2 = activ(conv(layer_1, 'c2', n_filters=64, filter_size=1, stride=1, init_scale=np.sqrt(2)))
-    layer_3 = activ(conv(layer_2, 'c3', n_filters=128, filter_size=1, stride=1, init_scale=np.sqrt(2)))
-    layer_3 = conv_to_fc(layer_3)
-    return activ(linear(layer_3, 'fc1', n_hidden=128, init_scale=np.sqrt(2)))
-
-
 if __name__ == "__main__":
-    inp_name = "profit_tohlcv_100obs_100k-min_0fee_10k-ep"
+    inp_name = "profit_tohlcv_150obs_100k-min_0fee_200-ep_1-7-50agg_5gran"
 
-    run_profit_train(inp_name, load=False, init_capital=50000, action_granularity=10, trade_fee=0.)
+    run_profit_train(inp_name, load=False, init_capital=50000, action_granularity=5, trade_fee=0., ep_len=1000,
+                     ignored_rews=(0, -0.01), n_env=32, n_obs=150)
 
     # run_single_trade_train(inp_name, load=False, min_points=100000, n_env=32)
     # run_single_trade_demo(name, realtime=False, symbol='ETHBTC')
