@@ -17,6 +17,7 @@ KAIKO_API_KEY = 'b4fda6c9cfa8c173209c61171bd1b4aa'
 BINANCE_API_KEY = 'xE0pxPbbPXmarmETXqgBoZSAPba9nr5Wy3pfOjmoOUAK6A0VQ2a2DpK4wonrzJgj'
 BINANCE_API_SECRET = 'NT6ZJ8SKa2bQHrvDcXpYNg3ThZsgOFUibzjeAJ7HBt3X0JZd6YkwkQDPTjhvoQbP'
 MAX_DOC_SIZE = 150000
+OHLCV_KEYS = ('timestamps', 'open', 'high', 'low', 'close', 'volume')
 binance_klines_indices = {
     'open': 1,
     'high': 2,
@@ -184,12 +185,30 @@ class HistoricalInstrumentDataset:
         self.__split_collection = self.__db["splits"]
         self.load_split()
 
-    def get_random_windows(self, n_points=200, minute_timestamps=True, split='test', aggregates=(1,)):
+    def get_random_windows(self, n_points=200, split='test', aggregates=(1,), keys=OHLCV_KEYS, minute_timestamps=True):
         instrument_id = random.choice(self.test_ids if split == 'test' else self.train_ids)
-        instrument = HistoricalInstrument(self.__instrument_collection.find_one({'_id': instrument_id}))
-        aggregated_windows = instrument.get_random_aggregated_ohlcv_windows(n_points=n_points, aggregates=aggregates,
-                                                                            minute_timestamps=minute_timestamps)
-        return aggregated_windows
+        instrument_size = self.get_instrument_size(instrument_id)
+        window_size = n_points * max(aggregates)
+        assert window_size < instrument_size
+        start_index = random.randint(0, instrument_size - window_size)
+        end_index = start_index + window_size
+        full_window = {k: v for k, v in self.get_sliced_instrument(instrument_id, start_index, end_index).data.items() if k in keys}
+
+        return {
+            aggregate:
+                aggregate_ohlcv_window(get_dict_of_lists_slice(full_window, start=window_size - n_points * aggregate),
+                                       aggregate,
+                                       minute_timestamps=minute_timestamps)
+            for aggregate in aggregates
+        }
+
+    def get_sliced_instrument(self, _id, start, end, keys=OHLCV_KEYS):
+        return HistoricalInstrument(self.__instrument_collection.find_one(
+            {'_id': _id}, {key: {'$slice': [start, end - start]} for key in keys}
+        ))
+
+    def get_instrument_size(self, _id):
+        return self.__instrument_collection.find_one({'_id': _id}, {'size': 1})["size"]
 
     def get_instrument_ids(self):
         return self.__instrument_collection.distinct('_id', filter={f'open.{self.min_points}': {'$exists': True}})
@@ -278,4 +297,5 @@ class HistoricalInstrumentDataset:
 
 if __name__ == "__main__":
     hid = HistoricalInstrumentDataset(min_points=100000)
-    print(hid.get_random_windows(n_points=10, aggregates=(1, 7, 10, 50)))
+    # print(hid.get_sliced_instrument('binanceapi:option:dgdeth:1m:300000:450000', 100, 110).data)
+    print(hid.get_random_windows(n_points=200, aggregates=(1, 7, 20)).data)

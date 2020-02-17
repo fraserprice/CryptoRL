@@ -208,7 +208,7 @@ class ProfitEnv(MarketEnv):
         reward = 0.1 * pnl
 
         if close_p <= 0 or hold:
-            reward = -0.01 * pnl
+            reward = -0.01 * abs(pnl)
         elif exit_long:
             if self.longed_value == 0:
                 reward = -0.1
@@ -273,8 +273,7 @@ class ProfitEnv(MarketEnv):
     def _get_normalized_state_data(self):
         return [val / self.init_capital for val in (self.capital, self.longed_value)] + \
                [1 if len(self.long_timestamps) > 0 and self.curr_timestamp == self.long_timestamps[-1] else -1,
-                1 if len(self.long_exit_timestamps) > 0 and self.curr_timestamp == self.long_exit_timestamps[
-                    -1] else -1]
+                1 if len(self.long_exit_timestamps) > 0 and self.curr_timestamp == self.long_exit_timestamps[-1] else -1]
 
 
 class SingleTradeEnv(MarketEnv):
