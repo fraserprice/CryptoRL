@@ -250,7 +250,7 @@ class ProfitEnv(MarketEnv):
         # liquid_pen = 0.005 * self.capital / self.init_capital
         # reward -= liquid_pen
 
-        if self.steps % 1000 == 0:
+        if self.steps % 100 == 0:
             print(f"Capital:\t{int(self.capital)}\tStockVal:\t{int(self.longed_value)}\tAction:\t{action}\tRew:\t{reward}")
 
         self._update_window()
