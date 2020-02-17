@@ -15,6 +15,7 @@ from stable_baselines.common.vec_env import SubprocVecEnv
 from stable_baselines import PPO2
 from env import SingleTradeEnv, ProfitEnv
 import tensorflow as tf
+
 tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 from stable_baselines.a2c.utils import conv, linear, conv_to_fc
 
@@ -164,6 +165,7 @@ def cnn_extractor_gen(c=3, w=10, h=200):
         layer_3 = activ(conv(layer_2, 'c3', n_filters=128, filter_size=1, stride=1, init_scale=np.sqrt(2)))
         layer_3 = conv_to_fc(layer_3)
         return activ(linear(layer_3, 'fc1', n_hidden=128, init_scale=np.sqrt(2)))
+
     return cnn_extractor
 
 
@@ -178,6 +180,7 @@ def get_cnn_policy(c=3, w=10, h=200, fc=(64, 32)):
         def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, **_kwargs):
             super().__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch,
                              layers=fc, **_kwargs, cnn_extractor=cnn_extractor_gen(c=c, w=w, h=h))
+
     return CustomCnnPolicy
 
 
@@ -218,7 +221,7 @@ def run_cnn_train(env_gen, name, n_env=16, load=False, ignored_rews=None, c=3, w
 
 
 def run_single_trade_train(name, load=False, min_points=100000, trade_fee=0.15, n_env=16, ignored_rewards=None,
-                           n_obs=100, aggregates=(1, 7, 50), obs_dim=8):
+                           n_obs=100, aggregates=(1, 7, 50), obs_dim=9):
     env_gen = lambda: SingleTradeEnv(mode='train',
                                      trade_fee=trade_fee,
                                      min_points=min_points,
@@ -257,7 +260,8 @@ def run_profit_train(name, load=False, min_points=100000, trade_fee=0.15, n_env=
                   c=len(aggregates), h=n_obs, w=obs_dim, fc=fc)
 
 
-def run_profit_demo(name, min_points=50000, realtime=False, symbol=None, trade_fee=0.15, action_granularity=10, init_capital=50000):
+def run_profit_demo(name, min_points=50000, realtime=False, symbol=None, trade_fee=0.15, action_granularity=10,
+                    init_capital=50000):
     env_gen = lambda: ProfitEnv(mode='test',
                                 trade_fee=trade_fee,
                                 min_points=min_points,
@@ -268,7 +272,8 @@ def run_profit_demo(name, min_points=50000, realtime=False, symbol=None, trade_f
     run_demo(env_gen, name)
 
 
-def run_profit_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50000, action_granularity=10, init_capital=50000):
+def run_profit_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50000, action_granularity=10,
+                    init_capital=50000):
     env_gen = lambda: ProfitEnv(mode='test',
                                 trade_fee=trade_fee,
                                 min_points=min_points,
@@ -283,5 +288,6 @@ if __name__ == "__main__":
     #                  ignored_rews=(0, -0.01), n_env=64, n_obs=100)
 
     sing_name = "conv_tohlcv_100obs_100k-min_0fee_1-5-20-agg"
-    run_single_trade_train(sing_name, load=False, min_points=100000, n_env=32, aggregates=(1, 5, 20))
+    run_single_trade_train(sing_name, load=False, min_points=100000, n_env=64, aggregates=(1, 5, 20), n_obs=100,
+                           trade_fee=0.)
     # run_single_trade_demo(sing_name, realtime=False, symbol='ETHBTC')

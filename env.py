@@ -285,7 +285,7 @@ class SingleTradeEnv(MarketEnv):
         # long, short, hold, exit
         self.action_space = spaces.Discrete(4)
 
-        self.obs_dims = 3 + (5 if self.obs_keys is None else len(self.obs_keys))
+        self.obs_dims = 3 + len(self.obs_keys)
         self.observation_space = spaces.Box(low=-3, high=3, shape=(self.n_obs, self.obs_dims, self.n_aggregates), dtype='float32')
 
         self.enter_timestamp, self.enter_value, self.normalized_enter_value, self.long = None, None, None, None
