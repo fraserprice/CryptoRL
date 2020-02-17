@@ -82,7 +82,7 @@ class TraderAgent:
 
 
 class LossPlotter:
-    def __init__(self, max_points=100000000):
+    def __init__(self, max_points=1000):
         from matplotlib import pyplot as plt
         self.plt = plt
         self.plt.ion()
@@ -98,24 +98,22 @@ class LossPlotter:
         self.t_start = None
         self.last_checkpoint = None
 
-    def add_point(self, distance):
+    def add_point(self, reward):
         t = time.time()
         if self.t_start is None:
             self.t_start = t
         self.timesteps.append(t - self.t_start)
-        self.rewards.append(distance)
+        self.rewards.append(reward)
+        if len(self.timesteps) > self.max_points:
+            self.timesteps = self.timesteps[1:]
+            self.rewards = self.rewards[1:]
         return t
 
     def plot(self):
         self.plt.xlabel("Time/s")
         self.plt.ylabel("Average reward")
         self.plt.cla()
-        if len(self.timesteps) <= self.max_points:
-            self.plt.plot(self.timesteps, self.rewards)
-        else:
-            self.aggregated_rewards, self.aggregated_timesteps, _ = binned_statistic(self.timesteps, self.rewards,
-                                                                                     bins=self.max_points)
-            self.plt.plot(self.aggregated_timesteps[1:], self.aggregated_rewards)
+        self.plt.plot(self.timesteps, self.rewards)
         self.plt.draw()
         self.plt.pause(0.001)
 
@@ -201,30 +199,30 @@ def run_eval(env_gen, name, n_episodes=10000):
 
 
 # noinspection PyTypeChecker
-def run_cnn_train(env_gen, name, n_env=16, load=False, ignores_rews=None, c=3, w=10, h=200, fc=(64, 32)):
+def run_cnn_train(env_gen, name, n_env=16, load=False, ignored_rews=None, c=3, w=10, h=200, fc=(64, 32)):
     ppo_agent = TraderAgent(env_gen, n_env=n_env)
     if load:
         ppo_agent.load_model("models/" + name)
     else:
         ppo_agent.new_model(policy=get_cnn_policy(c=c, w=w, h=h, fc=fc), gamma=0.995)
     loss_plotter = LossPlotter(max_points=10000000)
-    save_interval = 50000
-    for i in range(0, 50000000, save_interval):
+    save_interval = 500000
+    for i in range(0, 5000000000, save_interval):
         ppo_agent.learn(save_interval, callback=loss_plotter.get_plot_callback(verbose=True, filename="figures/" + name,
                                                                                checkpoint_interval=60,
-                                                                               ignored_rews=ignores_rews))
+                                                                               ignored_rews=ignored_rews))
         print("Saving...")
         loss_plotter.save("figures/" + name)
         ppo_agent.save_model("models/" + name)
 
 
-def run_single_trade_train(name, load=False, min_points=100000, trade_fee=0.15, n_env=16, ignore_zero_rew=False,
+def run_single_trade_train(name, load=False, min_points=100000, trade_fee=0.15, n_env=16, ignored_rewards=None,
                            n_obs=100, aggregates=(1, 7, 50), obs_dim=8):
     env_gen = lambda: SingleTradeEnv(mode='train',
                                      trade_fee=trade_fee,
                                      min_points=min_points,
                                      n_obs=n_obs)
-    run_cnn_train(env_gen, name, n_env=n_env, load=load, ignore_zero_rew=ignore_zero_rew, c=len(aggregates), h=n_obs,
+    run_cnn_train(env_gen, name, n_env=n_env, load=load, ignored_rews=ignored_rewards, c=len(aggregates), h=n_obs,
                   w=obs_dim)
 
 
@@ -254,7 +252,7 @@ def run_profit_train(name, load=False, min_points=100000, trade_fee=0.15, n_env=
                                 action_granularity=action_granularity,
                                 ep_len=ep_len,
                                 n_obs=n_obs)
-    run_cnn_train(env_gen, name, n_env=n_env, load=load, ignores_rews=ignored_rews,
+    run_cnn_train(env_gen, name, n_env=n_env, load=load, ignored_rews=ignored_rews,
                   c=len(aggregates), h=n_obs, w=obs_dim, fc=fc)
 
 
@@ -279,10 +277,10 @@ def run_profit_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50000, a
 
 
 if __name__ == "__main__":
-    inp_name = "profit_tohlcv_150obs_100k-min_0fee_200-ep_1-7-50agg_5gran"
+    inp_name = "profit_100obs_0fee_10k-ep_1-7-50agg_5gran"
 
-    run_profit_train(inp_name, load=False, init_capital=50000, action_granularity=5, trade_fee=0., ep_len=1000,
-                     ignored_rews=(0, -0.01), n_env=32, n_obs=150)
+    run_profit_train(inp_name, load=False, init_capital=50000, action_granularity=5, trade_fee=0., ep_len=10000,
+                     ignored_rews=(0, -0.01), n_env=128, n_obs=100)
 
     # run_single_trade_train(inp_name, load=False, min_points=100000, n_env=32)
     # run_single_trade_demo(name, realtime=False, symbol='ETHBTC')

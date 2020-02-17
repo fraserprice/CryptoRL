@@ -203,10 +203,12 @@ class ProfitEnv(MarketEnv):
         long, exit_long = (x == 1 for x in (long, exit_long))
         self.longed_value = self.longed_amt * close_p
 
-        reward = 0.1 * ((self.capital + self.longed_value) / self.init_capital - 1)
+        pnl = (self.capital + self.longed_value) / self.init_capital - 1
+
+        reward = 0.1 * pnl
 
         if close_p <= 0 or hold:
-            pass
+            reward = -0.01 * pnl
         elif exit_long:
             if self.longed_value == 0:
                 reward = -0.1
@@ -223,7 +225,7 @@ class ProfitEnv(MarketEnv):
                     self.longed_value -= exit_val
                     self.capital += taxed_exit_val
                     if self.longed_value == 0:
-                        reward = 10 * (self.capital / self.init_capital - 1)
+                        reward = 100 * pnl
                     # print(f"Exiting {round(exit_amt, 5)} at {round(exit_val, 5)}")
         elif long:
             if self.capital == 0:
@@ -242,17 +244,14 @@ class ProfitEnv(MarketEnv):
                     self.capital -= enter_cap
                     # print(f"Longing {round(enter_cap, 5)} at {round(n_stocks, 5)}")
 
-        # if exit_short:
-        #     pass
-        # if short:
-        #     pass
         if self.steps == self.episode_length:
             pass
 
         # liquid_pen = 0.005 * self.capital / self.init_capital
         # reward -= liquid_pen
 
-        print(f"Capital:\t{int(self.capital)}\tStockVal:\t{int(self.longed_value)}\tAction:\t{action}\tRew:\t{reward}")
+        if self.steps % 1000 == 0:
+            print(f"Capital:\t{int(self.capital)}\tStockVal:\t{int(self.longed_value)}\tAction:\t{action}\tRew:\t{reward}")
 
         self._update_window()
 
