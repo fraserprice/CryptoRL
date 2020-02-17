@@ -300,9 +300,11 @@ class SingleTradeEnv(MarketEnv):
         reward = 0
         if close_p <= 0 or hold:
             if self.enter_timestamp is not None:
-                reward = -0.002
+                reward = -0.003
                 print(f"Penalizing for hold after enter: {reward}")
-            print("Holding")
+            else:
+                reward = -0.001
+                print(f"Penalizing for making no trade: {reward}")
         elif long or short:
             if self.enter_timestamp is None:
                 print(f"Entering {'long' if long else 'short'} at {timestamp} for {close_p}")
@@ -310,7 +312,7 @@ class SingleTradeEnv(MarketEnv):
                 self.normalized_enter_value = self.price_normalizers[1].transform([[self.enter_value]]).item()
             else:
                 print("Trying to enter trade when already entered")
-                reward = -0.2
+                reward = -0.1
         elif exit:
             if self.enter_timestamp is not None:
                 reward = 100 * (close_p - self.enter_value) / self.enter_value
@@ -321,7 +323,7 @@ class SingleTradeEnv(MarketEnv):
                 self.done = True
             else:
                 print("Trying to exit when not yet entered")
-                reward = -0.2
+                reward = -0.1
         if self.steps == self.episode_length:
             if self.enter_timestamp is not None:
                 print("Ended episode with trade in progress")

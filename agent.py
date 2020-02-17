@@ -221,11 +221,12 @@ def run_cnn_train(env_gen, name, n_env=16, load=False, ignored_rews=None, c=3, w
 
 
 def run_single_trade_train(name, load=False, min_points=100000, trade_fee=0.15, n_env=16, ignored_rewards=None,
-                           n_obs=100, aggregates=(1, 7, 50), obs_dim=9):
+                           n_obs=150, aggregates=(1, 7, 50), obs_dim=9, ep_len=150):
     env_gen = lambda: SingleTradeEnv(mode='train',
                                      trade_fee=trade_fee,
                                      min_points=min_points,
-                                     n_obs=n_obs, aggregates=aggregates)
+                                     n_obs=n_obs, aggregates=aggregates,
+                                     ep_len=ep_len)
     run_cnn_train(env_gen, name, n_env=n_env, load=load, ignored_rews=ignored_rewards, c=len(aggregates), h=n_obs,
                   w=obs_dim)
 
@@ -287,7 +288,7 @@ if __name__ == "__main__":
     # run_profit_train(prof_name, load=False, init_capital=50000, action_granularity=5, trade_fee=0., ep_len=500,
     #                  ignored_rews=(0, -0.01), n_env=64, n_obs=100)
 
-    sing_name = "conv_tohlcv_100obs_100k-min_0fee_1-5-20-agg"
-    run_single_trade_train(sing_name, load=False, min_points=100000, n_env=64, aggregates=(1, 5, 20), n_obs=100,
-                           trade_fee=0.)
+    sing_name = "conv_tohlcv_150obs_150eplen_100k-min_0fee_1-5-20-agg"
+    run_single_trade_train(sing_name, load=False, min_points=100000, n_env=64, aggregates=(1, 5, 20), n_obs=150,
+                           trade_fee=0., ep_len=150)
     # run_single_trade_demo(sing_name, realtime=False, symbol='ETHBTC')
