@@ -278,16 +278,15 @@ class ProfitEnv(MarketEnv):
 
 class SingleTradeEnv(MarketEnv):
     def __init__(self, trade_fee=0.2, n_obs=100, ep_len=150, mode='train', min_points=50000,
-                 realtime=False, symbol=None):
+                 realtime=False, symbol=None, aggregates=(1, 5, 20)):
         super().__init__(trade_fee=trade_fee, ep_len=ep_len, realtime=realtime, mode=mode, min_points=min_points,
-                         symbol=symbol,
-                         n_obs=n_obs)
+                         symbol=symbol, n_obs=n_obs, aggregates=aggregates)
 
         # long, short, hold, exit
         self.action_space = spaces.Discrete(4)
 
         self.obs_dims = 3 + (5 if self.obs_keys is None else len(self.obs_keys))
-        self.observation_space = spaces.Box(low=-3, high=3, shape=(self.n_obs, self.obs_dims,), dtype='float32')
+        self.observation_space = spaces.Box(low=-3, high=3, shape=(self.n_obs, self.obs_dims, self.n_aggregates), dtype='float32')
 
         self.enter_timestamp, self.enter_value, self.normalized_enter_value, self.long = None, None, None, None
 
