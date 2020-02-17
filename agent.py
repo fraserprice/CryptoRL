@@ -278,10 +278,10 @@ def run_profit_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50000, a
 
 
 if __name__ == "__main__":
-    inp_name = "profit_100obs_0fee_100-ep_1-7-50agg_5gran"
-
-    run_profit_train(inp_name, load=False, init_capital=50000, action_granularity=5, trade_fee=0., ep_len=1000,
+    prof_name = "profit_100obs_0fee_100-ep_1-7-50agg_5gran"
+    run_profit_train(prof_name, load=False, init_capital=50000, action_granularity=5, trade_fee=0., ep_len=1000,
                      ignored_rews=(0, -0.01), n_env=64, n_obs=100)
 
+    # sing_name = "conv_tohlcv_100obs_100k-min_0-15fee_10k-profit"
     # run_single_trade_train(inp_name, load=False, min_points=100000, n_env=32)
-    # run_single_trade_demo(name, realtime=False, symbol='ETHBTC')
+    # run_single_trade_demo(sing_name, realtime=False, symbol='ETHBTC')
