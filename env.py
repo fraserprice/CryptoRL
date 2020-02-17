@@ -200,7 +200,7 @@ class ProfitEnv(MarketEnv):
         long, exit_long, long_amt, exit_long_amt = action
         self.curr_timestamp, close_p = self._get_data_index(self.steps + self.n_obs - 1, keys=('timestamps', 'close'), aggregate=1)
         long, exit_long = (x == 1 for x in (long, exit_long))
-        hold = not long and not exit_long == 0
+        hold = not (long or exit_long)
         self.longed_value = self.longed_amt * close_p
 
         pnl = (self.capital + self.longed_value) / self.init_capital - 1
@@ -226,7 +226,6 @@ class ProfitEnv(MarketEnv):
                     self.capital += taxed_exit_val
                     if self.longed_value == 0:
                         reward = 100 * pnl
-                        print(reward)
                     # print(f"Exiting {round(exit_amt, 5)} at {round(exit_val, 5)}")
         elif long:
             if self.capital == 0:
