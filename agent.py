@@ -15,6 +15,7 @@ from stable_baselines.common.vec_env import SubprocVecEnv
 from stable_baselines import PPO2
 from env import SingleTradeEnv, ProfitEnv
 import tensorflow as tf
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 from stable_baselines.a2c.utils import conv, linear, conv_to_fc
 
 
@@ -280,7 +281,7 @@ if __name__ == "__main__":
     inp_name = "profit_100obs_0fee_100-ep_1-7-50agg_5gran"
 
     run_profit_train(inp_name, load=False, init_capital=50000, action_granularity=5, trade_fee=0., ep_len=1000,
-                     ignored_rews=(0, -0.01), n_env=128, n_obs=100)
+                     ignored_rews=(0, -0.01), n_env=64, n_obs=100)
 
     # run_single_trade_train(inp_name, load=False, min_points=100000, n_env=32)
     # run_single_trade_demo(name, realtime=False, symbol='ETHBTC')
