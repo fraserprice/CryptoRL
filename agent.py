@@ -58,7 +58,6 @@ class TraderAgent:
                 obs = env.reset()
 
     def evaluate(self, n_episodes=100, ignored_rewards=None):
-        assert self.mode == 'test', "Must be in test mode for evaluation"
         episode_rewards = []
         env = self.base_env_generator()
         obs = env.reset()
