@@ -67,12 +67,15 @@ class TraderAgent:
             action, _states = self.model.predict(obs)
             obs, reward, done, info = env.step(action)
             if done:
+                print(f"Final rew: {reward}")
                 if ignored_rewards is None or reward not in ignored_rewards:
                     episode_rewards.append(reward)
                 obs = env.reset()
                 i += 1
                 if i == n_episodes:
                     break
+            else:
+                print("Not done")
 
         mu = statistics.mean(episode_rewards)
         variance = statistics.variance(episode_rewards)
@@ -297,7 +300,7 @@ if __name__ == "__main__":
     #                  ignored_rews=(0, -0.01), n_env=64, n_obs=100)
 
     sing_name = "conv_tohlcv_150obs_150eplen_100k-min_0-15fee_1-5-20-agg"
-    print(run_single_trade_eval(sing_name, n_episodes=10000, trade_fee=0.15, min_points=100000, ignored_rewards=[-0.005], mode='test'))
+    print(run_single_trade_eval(sing_name, n_episodes=1000, trade_fee=0.15, min_points=100000, ignored_rewards=[-0.005], mode='test'))
     # run_single_trade_train(sing_name, load=False, min_points=100000, n_env=64, aggregates=(1, 5, 20), n_obs=150,
     #                        trade_fee=0.15, ep_len=150)
     # run_single_trade_demo(sing_name, realtime=False, symbol='ETHBTC')
