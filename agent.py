@@ -57,7 +57,7 @@ class TraderAgent:
                 print("====================")
                 obs = env.reset()
 
-    def evaluate(self, n_episodes=100):
+    def evaluate(self, n_episodes=100, ignored_rewards=None):
         assert self.mode == 'test', "Must be in test mode for evaluation"
         episode_rewards = []
         env = self.base_env_generator()
@@ -68,7 +68,8 @@ class TraderAgent:
             action, _states = self.model.predict(obs)
             obs, reward, done, info = env.step(action)
             if done:
-                episode_rewards.append(reward)
+                if ignored_rewards is None or reward not in ignored_rewards:
+                    episode_rewards.append(reward)
                 obs = env.reset()
                 i += 1
                 if i == n_episodes:
@@ -196,10 +197,10 @@ def run_demo(env_gen, name):
     ppo_agent.demo()
 
 
-def run_eval(env_gen, name, n_episodes=10000):
+def run_eval(env_gen, name, n_episodes=10000, ignored_rewards=None):
     ppo_agent = TraderAgent(env_gen, n_env=1)
     ppo_agent.load_model("models/" + name)
-    return ppo_agent.evaluate(n_episodes=n_episodes)
+    return ppo_agent.evaluate(n_episodes=n_episodes, ignored_rewards=ignored_rewards)
 
 
 # noinspection PyTypeChecker
@@ -245,14 +246,14 @@ def run_single_trade_demo(name, min_points=50000, realtime=False, symbol=None, t
 
 
 def run_single_trade_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50000, aggregates=(1, 5, 20),
-                          n_obs=150, ep_len=150):
+                          n_obs=150, ep_len=150, ignored_rewards=None):
     env_gen = lambda: SingleTradeEnv(mode='test',
                                      trade_fee=trade_fee,
                                      min_points=min_points,
                                      aggregates=aggregates,
                                      ep_len=ep_len,
                                      n_obs=n_obs)
-    return run_eval(env_gen, name, n_episodes=n_episodes)
+    return run_eval(env_gen, name, n_episodes=n_episodes, ignored_rewards=ignored_rewards)
 
 
 def run_profit_train(name, load=False, min_points=100000, trade_fee=0.15, n_env=16, init_capital=50000,
@@ -282,13 +283,13 @@ def run_profit_demo(name, min_points=50000, realtime=False, symbol=None, trade_f
 
 
 def run_profit_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50000, action_granularity=10,
-                    init_capital=50000):
+                    init_capital=50000, ignored_rewards=None):
     env_gen = lambda: ProfitEnv(mode='test',
                                 trade_fee=trade_fee,
                                 min_points=min_points,
                                 action_granularity=action_granularity,
                                 init_capital=init_capital)
-    return run_eval(env_gen, name, n_episodes=n_episodes)
+    return run_eval(env_gen, name, n_episodes=n_episodes, ignored_rewards=ignored_rewards)
 
 
 if __name__ == "__main__":
@@ -297,6 +298,7 @@ if __name__ == "__main__":
     #                  ignored_rews=(0, -0.01), n_env=64, n_obs=100)
 
     sing_name = "conv_tohlcv_150obs_150eplen_100k-min_0-15fee_1-5-20-agg"
+    print(run_single_trade_eval(sing_name, n_episodes=10000, trade_fee=0.15, min_points=100000, ignored_rewards=[-0.005]))
     # run_single_trade_train(sing_name, load=False, min_points=100000, n_env=64, aggregates=(1, 5, 20), n_obs=150,
     #                        trade_fee=0.15, ep_len=150)
     run_single_trade_demo(sing_name, realtime=False, symbol='ETHBTC')
