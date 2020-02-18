@@ -210,7 +210,7 @@ def run_cnn_train(env_gen, name, n_env=16, load=False, ignored_rews=None, c=3, w
     else:
         ppo_agent.new_model(policy=get_cnn_policy(c=c, w=w, h=h, fc=fc), gamma=0.995)
     loss_plotter = LossPlotter(max_points=10000000)
-    save_interval = 500000
+    save_interval = 50000
     for i in range(0, 5000000000, save_interval):
         ppo_agent.learn(save_interval, callback=loss_plotter.get_plot_callback(verbose=True, filename="figures/" + name,
                                                                                checkpoint_interval=60,
@@ -231,19 +231,27 @@ def run_single_trade_train(name, load=False, min_points=100000, trade_fee=0.15, 
                   w=obs_dim)
 
 
-def run_single_trade_demo(name, min_points=50000, realtime=False, symbol=None, trade_fee=0.15):
+def run_single_trade_demo(name, min_points=50000, realtime=False, symbol=None, trade_fee=0.15, aggregates=(1, 5, 20),
+                          n_obs=150, ep_len=150):
     env_gen = lambda: SingleTradeEnv(mode='test',
                                      trade_fee=trade_fee,
                                      min_points=min_points,
                                      realtime=realtime,
-                                     symbol=symbol)
+                                     symbol=symbol,
+                                     aggregates=aggregates,
+                                     ep_len=ep_len,
+                                     n_obs=n_obs)
     run_demo(env_gen, name)
 
 
-def run_single_trade_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50000):
+def run_single_trade_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50000, aggregates=(1, 5, 20),
+                          n_obs=150, ep_len=150):
     env_gen = lambda: SingleTradeEnv(mode='test',
                                      trade_fee=trade_fee,
-                                     min_points=min_points)
+                                     min_points=min_points,
+                                     aggregates=aggregates,
+                                     ep_len=ep_len,
+                                     n_obs=n_obs)
     return run_eval(env_gen, name, n_episodes=n_episodes)
 
 
@@ -289,6 +297,6 @@ if __name__ == "__main__":
     #                  ignored_rews=(0, -0.01), n_env=64, n_obs=100)
 
     sing_name = "conv_tohlcv_150obs_150eplen_100k-min_0-15fee_1-5-20-agg"
-    run_single_trade_train(sing_name, load=False, min_points=100000, n_env=64, aggregates=(1, 5, 20), n_obs=150,
-                           trade_fee=0.15, ep_len=150)
-    # run_single_trade_demo(sing_name, realtime=False, symbol='ETHBTC')
+    # run_single_trade_train(sing_name, load=False, min_points=100000, n_env=64, aggregates=(1, 5, 20), n_obs=150,
+    #                        trade_fee=0.15, ep_len=150)
+    run_single_trade_demo(sing_name, realtime=False, symbol='ETHBTC')
