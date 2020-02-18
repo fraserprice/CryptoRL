@@ -245,8 +245,8 @@ def run_single_trade_demo(name, min_points=50000, realtime=False, symbol=None, t
 
 
 def run_single_trade_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50000, aggregates=(1, 5, 20),
-                          n_obs=150, ep_len=150, ignored_rewards=None):
-    env_gen = lambda: SingleTradeEnv(mode='test',
+                          n_obs=150, ep_len=150, ignored_rewards=None, mode='test'):
+    env_gen = lambda: SingleTradeEnv(mode=mode,
                                      trade_fee=trade_fee,
                                      min_points=min_points,
                                      aggregates=aggregates,
@@ -282,8 +282,8 @@ def run_profit_demo(name, min_points=50000, realtime=False, symbol=None, trade_f
 
 
 def run_profit_eval(name, n_episodes=100000, trade_fee=0.15, min_points=50000, action_granularity=10,
-                    init_capital=50000, ignored_rewards=None):
-    env_gen = lambda: ProfitEnv(mode='test',
+                    init_capital=50000, ignored_rewards=None, mode='test'):
+    env_gen = lambda: ProfitEnv(mode=mode,
                                 trade_fee=trade_fee,
                                 min_points=min_points,
                                 action_granularity=action_granularity,
@@ -297,7 +297,7 @@ if __name__ == "__main__":
     #                  ignored_rews=(0, -0.01), n_env=64, n_obs=100)
 
     sing_name = "conv_tohlcv_150obs_150eplen_100k-min_0-15fee_1-5-20-agg"
-    print(run_single_trade_eval(sing_name, n_episodes=10000, trade_fee=0.15, min_points=100000, ignored_rewards=[-0.005]))
+    print(run_single_trade_eval(sing_name, n_episodes=10000, trade_fee=0.15, min_points=100000, ignored_rewards=[-0.005], mode='test'))
     # run_single_trade_train(sing_name, load=False, min_points=100000, n_env=64, aggregates=(1, 5, 20), n_obs=150,
     #                        trade_fee=0.15, ep_len=150)
-    run_single_trade_demo(sing_name, realtime=False, symbol='ETHBTC')
+    # run_single_trade_demo(sing_name, realtime=False, symbol='ETHBTC')
